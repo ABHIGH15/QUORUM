@@ -100,6 +100,7 @@ export interface Vote {
   kind: 'VOTE' | 'VETO';
   choice: 'APPROVE' | 'REJECT' | 'VETO';
   created_at?: string;
+  sequence_num?: number;
 }
 
 export interface Vendor {

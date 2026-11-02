@@ -403,11 +403,14 @@ export function evaluate(input: GuardInput): GuardResult {
   const memberVotesMap = new Map<string, Vote>();
   const memberVetoesMap = new Map<string, Vote>();
 
-  // Deterministic sorting comparator
+  // Deterministic sorting comparator: created_at -> sequence_num -> deterministic tie-break
   const sortedVotes = [...votes].sort((a, b) => {
     const timeA = a.created_at ? new Date(a.created_at).getTime() : 0;
     const timeB = b.created_at ? new Date(b.created_at).getTime() : 0;
     if (timeA !== timeB) return timeA - timeB;
+    const seqA = a.sequence_num ?? 0;
+    const seqB = b.sequence_num ?? 0;
+    if (seqA !== seqB) return seqA - seqB;
     const idA = a.id ?? `${a.proposal_id}_${a.member_id}_${a.kind}_${a.choice}`;
     const idB = b.id ?? `${b.proposal_id}_${b.member_id}_${b.kind}_${b.choice}`;
     return idA.localeCompare(idB);

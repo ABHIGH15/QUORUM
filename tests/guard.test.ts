@@ -988,7 +988,22 @@ describe('Quorum Guard - Property-Based Fuzz Testing (fast-check)', () => {
     );
   });
 
-  it('48. Universal Invariant: APPROVED strictly implies >= 2 distinct approvers and valid financial bounds', () => {
+  it('48. Universal Invariant: APPROVED strictly implies >= 2 distinct approvers and valid financial & lifecycle bounds', () => {
+    const validGroupStatuses: ('DRAFT' | 'FUNDING' | 'ACTIVE' | 'CLOSING' | 'CLOSED')[] = [
+      'DRAFT',
+      'FUNDING',
+      'ACTIVE',
+      'CLOSING',
+      'CLOSED',
+    ];
+    const proposalTypes = [
+      'PURCHASE',
+      'POLICY_AMENDMENT',
+      'ACCEPT_REDUCED_BUDGET',
+      'UNWIND_FUNDING',
+      'MALICIOUS_CUSTOM_TYPE',
+    ];
+
     fc.assert(
       fc.property(
         // Random eligible voters (0 to 6)
@@ -1003,7 +1018,29 @@ describe('Quorum Guard - Property-Based Fuzz Testing (fast-check)', () => {
         fc.integer({ min: -100, max: 30000 }),
         // Random available budget
         fc.integer({ min: 0, max: 50000 }),
-        (voters, approvers, rejecters, vetoers, amount, available) => {
+        // Proposal type
+        fc.constantFrom(...proposalTypes),
+        // Real group status enum
+        fc.constantFrom(...validGroupStatuses),
+        // Veto window minutes
+        fc.integer({ min: 0, max: 10 }),
+        // Live payment flag
+        fc.boolean(),
+        // Number of extraneous votes for other proposals
+        fc.integer({ min: 0, max: 3 }),
+        (
+          voters,
+          approvers,
+          rejecters,
+          vetoers,
+          amount,
+          available,
+          propType,
+          grpStatus,
+          vetoMins,
+          hasLivePayment,
+          foreignVotesCount
+        ) => {
           // Explicit timestamp sequencing so vote precedence is mathematically unambiguous:
           // Approvals @ 12:01:10, Rejections @ 12:01:30 (overrides approval), Vetoes @ 12:01:50
           const votesList: Vote[] = [
@@ -1028,13 +1065,35 @@ describe('Quorum Guard - Property-Based Fuzz Testing (fast-check)', () => {
               choice: 'VETO' as const,
               created_at: '2026-11-02T12:01:50Z',
             })),
+            // Extraneous foreign votes that must be ignored
+            ...Array.from({ length: foreignVotesCount }, (_, i) => ({
+              proposal_id: `foreign_prop_${i}`,
+              member_id: eligibleMembers[i % eligibleMembers.length],
+              kind: 'VOTE' as const,
+              choice: 'APPROVE' as const,
+              created_at: '2026-11-02T12:01:10Z',
+            })),
           ];
 
           const input = createBaseInput({
             now: '2026-11-02T12:05:00.000Z',
+            policy: {
+              ...basePolicy,
+              veto_window_minutes: vetoMins,
+            },
+            group: {
+              id: 'grp_demo',
+              mode: 'POOLED',
+              status: grpStatus,
+            },
+            fundingRound: {
+              id: 'round_1',
+              status: 'AWAITING_GROUP_DECISION',
+            },
             proposal: {
               ...createBaseInput().proposal,
               id: 'prop_1',
+              type: propType as any,
               amount_cents: amount,
               veto_ends_at: '2026-11-02T12:02:00.000Z',
             },
@@ -1043,6 +1102,7 @@ describe('Quorum Guard - Property-Based Fuzz Testing (fast-check)', () => {
               reservedCents: 0,
               fundingReady: true,
             },
+            existingLivePayment: hasLivePayment,
             votes: votesList,
             eligibleVoters: voters,
           });
@@ -1059,20 +1119,43 @@ describe('Quorum Guard - Property-Based Fuzz Testing (fast-check)', () => {
             );
             const distinctOracleApprovals = new Set(oracleApprovers).size;
 
-            // Invariant 1: Oracle verifies >= 2 distinct eligible approvals
-            expect(distinctOracleApprovals).toBeGreaterThanOrEqual(2);
-            // Invariant 2: No eligible member cast a veto
+            // Invariant 1: No eligible member cast an active veto
             expect(eligibleVetoers.length).toBe(0);
-            // Invariant 3: Raw input amount is strictly positive and within hard cap and available budget
-            expect(amount).toBeGreaterThanOrEqual(1);
-            expect(amount).toBeLessThanOrEqual(basePolicy.hard_cap_cents);
-            expect(amount).toBeLessThanOrEqual(available);
-            // Invariant 4: Raw eligible voters count is >= 2
-            expect(voters.length).toBeGreaterThanOrEqual(2);
+
+            // Invariant 2: Cannot have an existing live payment
+            expect(hasLivePayment).toBe(false);
+
+            // Invariant 3: Proposal type must be a valid system type (never unknown)
+            expect(['PURCHASE', 'POLICY_AMENDMENT', 'ACCEPT_REDUCED_BUDGET', 'UNWIND_FUNDING']).toContain(propType);
+
+            if (propType === 'PURCHASE') {
+              // Purchase invariant: at least 2 distinct eligible approvals
+              expect(distinctOracleApprovals).toBeGreaterThanOrEqual(2);
+              // Purchase invariant: group must be ACTIVE
+              expect(grpStatus).toBe('ACTIVE');
+              // Purchase invariant: raw amount is strictly positive and within cap & available budget
+              expect(amount).toBeGreaterThanOrEqual(1);
+              expect(amount).toBeLessThanOrEqual(basePolicy.hard_cap_cents);
+              expect(amount).toBeLessThanOrEqual(available);
+              // Purchase invariant: at least 2 eligible voters
+              expect(voters.length).toBeGreaterThanOrEqual(2);
+            } else if (propType === 'POLICY_AMENDMENT') {
+              // Amendment invariant: at least 2 distinct eligible approvals
+              expect(distinctOracleApprovals).toBeGreaterThanOrEqual(2);
+              // Amendment invariant: group must be ACTIVE
+              expect(grpStatus).toBe('ACTIVE');
+              // Amendment invariant: at least 2 eligible voters
+              expect(voters.length).toBeGreaterThanOrEqual(2);
+            } else {
+              // Funding decision invariant: group must be in FUNDING
+              expect(grpStatus).toBe('FUNDING');
+              // At least 1 eligible contributor approval
+              expect(distinctOracleApprovals).toBeGreaterThanOrEqual(1);
+            }
           }
         }
       ),
-      { numRuns: 300 }
+      { numRuns: 500 }
     );
   });
 });

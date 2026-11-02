@@ -5,6 +5,7 @@
  * - No I/O, no network, no database calls, no LLM
  * - Injected clock (`input.now`) ensures 100% deterministic testing
  * - Single source of truth for spending authorization
+ * - Guaranteed: No single voter can authorize an expenditure alone when votes_required >= 2
  */
 
 import {
@@ -14,6 +15,7 @@ import {
   CheckDetail,
   GuardNumbers,
   GuardSuggestions,
+  Vote,
 } from './types';
 
 export function evaluate(input: GuardInput): GuardResult {
@@ -254,22 +256,49 @@ export function evaluate(input: GuardInput): GuardResult {
     votesRequired = Math.floor(eligibleVotersCount / 2) + 1;
   }
 
-  // Filter votes from eligible voters only
-  const validVotes = votes.filter(v => eligibleVoters.includes(v.member_id));
+  // ---------------------------------------------------------------------------
+  // Vote Deduplication & Voter Eligibility Enforcement
+  // Invariants:
+  // - Only voters in `eligibleVoters` are recognized.
+  // - Agent, owner (if not an eligible voter), removed members, and strangers are ignored.
+  // - If a member votes multiple times, deduplicate by member_id (latest vote wins).
+  // - A member who changes their vote counts once, reflecting their latest choice.
+  // - Veto is tracked as a separate act, also restricted to eligibleVoters.
+  // ---------------------------------------------------------------------------
 
-  // Count approvals and rejections
-  const approvalVotes = validVotes.filter(v => v.kind === 'VOTE' && v.choice === 'APPROVE');
-  const rejectionVotes = validVotes.filter(v => v.kind === 'VOTE' && v.choice === 'REJECT');
-  const vetoVotes = validVotes.filter(v => v.kind === 'VETO' || v.choice === 'VETO');
+  const memberVotesMap = new Map<string, Vote>();
+  const memberVetoesMap = new Map<string, Vote>();
 
-  const approvals = approvalVotes.length;
-  const rejections = rejectionVotes.length;
-  const vetoActive = vetoVotes.length > 0;
+  // Process votes in order (or sort chronologically if created_at provided)
+  const sortedVotes = [...votes].sort((a, b) => {
+    if (a.created_at && b.created_at) {
+      return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+    }
+    return 0;
+  });
 
-  // Distinct members who have cast a VOTE
-  const votedMemberIds = new Set(validVotes.filter(v => v.kind === 'VOTE').map(v => v.member_id));
-  const votesCast = votedMemberIds.size;
+  for (const vote of sortedVotes) {
+    // Discard any vote from non-eligible participants
+    if (!eligibleVoters.includes(vote.member_id)) {
+      continue;
+    }
+
+    if (vote.kind === 'VETO' || vote.choice === 'VETO') {
+      memberVetoesMap.set(vote.member_id, vote);
+    } else if (vote.kind === 'VOTE') {
+      // Deduplicate: latest vote from this member overwrites earlier vote
+      memberVotesMap.set(vote.member_id, vote);
+    }
+  }
+
+  const latestVotes = Array.from(memberVotesMap.values());
+  const approvals = latestVotes.filter(v => v.choice === 'APPROVE').length;
+  const rejections = latestVotes.filter(v => v.choice === 'REJECT').length;
+  const votesCast = latestVotes.length; // Distinct eligible members who voted
   const unvotedEligible = eligibleVotersCount - votesCast;
+
+  const vetoActive = memberVetoesMap.size > 0;
+  const vetoVoters = Array.from(memberVetoesMap.keys());
 
   // VETOED
   const vetoPass = !vetoActive;
@@ -278,7 +307,7 @@ export function evaluate(input: GuardInput): GuardResult {
     pass: vetoPass,
     detail: vetoPass
       ? `No veto cast against proposal ${proposal.id}`
-      : `Veto cast by ${vetoVotes.map(v => v.member_id).join(', ')}`,
+      : `Veto cast by ${vetoVoters.join(', ')}`,
   });
   if (!vetoPass) reasonCodes.push('VETOED');
 
@@ -311,12 +340,13 @@ export function evaluate(input: GuardInput): GuardResult {
     if (proposal.veto_ends_at) {
       const nowMs = new Date(now).getTime();
       const vetoEndMs = new Date(proposal.veto_ends_at).getTime();
+      // now < veto_ends_at means window is still open.
+      // At now >= veto_ends_at, window has closed.
       vetoWindowEnded = nowMs >= vetoEndMs;
       vetoWindowDetail = vetoWindowEnded
         ? `Veto window closed at ${proposal.veto_ends_at} (current time: ${now})`
         : `Veto window is open until ${proposal.veto_ends_at} (current time: ${now})`;
     } else {
-      // If veto_ends_at is not set yet, window is not active or hasn't started
       vetoWindowEnded = true;
       vetoWindowDetail = 'Veto ends timestamp not set';
     }

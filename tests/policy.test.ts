@@ -51,28 +51,35 @@ const knownVendors: Vendor[] = [
   },
 ];
 
-describe('Policy Deterministic Validator (§5.2)', () => {
-  it('passes on valid demo policy', () => {
+describe('Policy Deterministic Validator - All 9 Rules Tested (§5.2)', () => {
+  it('0. Baseline: Passes on valid demo policy', () => {
     const res = validatePolicy(validPolicy, knownVendors);
     expect(res.valid).toBe(true);
     expect(res.errors).toHaveLength(0);
   });
 
-  it('fails Rule 1 when budget does not match per_member * contributors', () => {
+  it('Rule 1: Fails when budget_cents != per_member_cents * min_contributors', () => {
     const invalid = { ...validPolicy, budget_cents: 50000 };
     const res = validatePolicy(invalid, knownVendors);
     expect(res.valid).toBe(false);
     expect(res.errors.some(e => e.includes('Rule 1'))).toBe(true);
   });
 
-  it('fails Rule 2 when hard_cap > budget or unanimous > hard_cap', () => {
+  it('Rule 2A: Fails when hard_cap_cents > budget_cents', () => {
     const invalid = { ...validPolicy, hard_cap_cents: 60000 };
     const res = validatePolicy(invalid, knownVendors);
     expect(res.valid).toBe(false);
     expect(res.errors.some(e => e.includes('Rule 2'))).toBe(true);
   });
 
-  it('fails Rule 3 when tiers are unsorted or highest tier != hard_cap', () => {
+  it('Rule 2B: Fails when unanimous_above_cents > hard_cap_cents', () => {
+    const invalid = { ...validPolicy, unanimous_above_cents: 25000 };
+    const res = validatePolicy(invalid, knownVendors);
+    expect(res.valid).toBe(false);
+    expect(res.errors.some(e => e.includes('Rule 2'))).toBe(true);
+  });
+
+  it('Rule 3A: Fails when approval_tiers are unsorted', () => {
     const invalid = {
       ...validPolicy,
       approval_tiers: [
@@ -82,26 +89,92 @@ describe('Policy Deterministic Validator (§5.2)', () => {
     };
     const res = validatePolicy(invalid, knownVendors);
     expect(res.valid).toBe(false);
-    expect(res.errors.some(e => e.includes('Rule 3'))).toBe(true);
+    expect(res.errors.some(e => e.includes('Rule 3') && e.includes('sorted'))).toBe(true);
   });
 
-  it('fails Rule 6 when authorization window > 48 hours', () => {
+  it('Rule 3B: Fails when highest tier max_cents != hard_cap_cents', () => {
+    const invalid = {
+      ...validPolicy,
+      approval_tiers: [
+        { max_cents: 6000, votes_required: 2 },
+        { max_cents: 18000, votes_required: 4 }, // != hard_cap_cents 20000
+      ],
+    };
+    const res = validatePolicy(invalid, knownVendors);
+    expect(res.valid).toBe(false);
+    expect(res.errors.some(e => e.includes('Rule 3') && e.includes('Highest tier'))).toBe(true);
+  });
+
+  it('Rule 4: Fails when votes_required is outside 1..min_contributors range', () => {
+    const invalid = {
+      ...validPolicy,
+      approval_tiers: [
+        { max_cents: 6000, votes_required: 0 }, // Below 1
+        { max_cents: 20000, votes_required: 7 }, // Above min_contributors (6)
+      ],
+    };
+    const res = validatePolicy(invalid, knownVendors);
+    expect(res.valid).toBe(false);
+    expect(res.errors.some(e => e.includes('Rule 4'))).toBe(true);
+  });
+
+  it('Rule 5A: Fails when veto_window_minutes < 1', () => {
+    const invalid = { ...validPolicy, veto_window_minutes: 0 };
+    const res = validatePolicy(invalid, knownVendors);
+    expect(res.valid).toBe(false);
+    expect(res.errors.some(e => e.includes('Rule 5') && e.includes('veto_window_minutes'))).toBe(true);
+  });
+
+  it('Rule 5B: Fails when capture_retry_attempts > 3', () => {
+    const invalid = {
+      ...validPolicy,
+      funding: { ...validPolicy.funding, capture_retry_attempts: 5 },
+    };
+    const res = validatePolicy(invalid, knownVendors);
+    expect(res.valid).toBe(false);
+    expect(res.errors.some(e => e.includes('Rule 5') && e.includes('capture_retry_attempts'))).toBe(true);
+  });
+
+  it('Rule 6: Fails when authorization_window_hours > 48 (PayPal honor ceiling)', () => {
     const invalid = {
       ...validPolicy,
       funding: { ...validPolicy.funding, authorization_window_hours: 72 },
     };
     const res = validatePolicy(invalid, knownVendors);
     expect(res.valid).toBe(false);
-    expect(res.errors.some(e => e.includes('authorization_window_hours'))).toBe(true);
+    expect(res.errors.some(e => e.includes('Rule 6') && e.includes('authorization_window_hours'))).toBe(true);
   });
 
-  it('fails Rule 8 when allowlisted vendor is unverified or unknown', () => {
+  it('Rule 7: Fails when partial_failure_default is not UNWIND', () => {
+    const invalid = {
+      ...validPolicy,
+      funding: { ...validPolicy.funding, partial_failure_default: 'KEEP_FUNDS' as any },
+    };
+    const res = validatePolicy(invalid, knownVendors);
+    expect(res.valid).toBe(false);
+    expect(res.errors.some(e => e.includes('Rule 7') || e.includes('UNWIND'))).toBe(true);
+  });
+
+  it('Rule 8A: Fails when allowlisted vendor does not exist in known vendors', () => {
+    const invalid = {
+      ...validPolicy,
+      vendors: {
+        mode: 'ALLOWLIST_ONLY' as const,
+        allowlist_vendor_ids: ['v_unknown_vendor'],
+      },
+    };
+    const res = validatePolicy(invalid, knownVendors);
+    expect(res.valid).toBe(false);
+    expect(res.errors.some(e => e.includes('Rule 8') && e.includes('does not exist'))).toBe(true);
+  });
+
+  it('Rule 8B: Fails when allowlisted vendor exists but verified is false', () => {
     const unverifiedVendors: Vendor[] = [
       { ...knownVendors[0], verified: false },
       knownVendors[1],
     ];
     const res = validatePolicy(validPolicy, unverifiedVendors);
     expect(res.valid).toBe(false);
-    expect(res.errors.some(e => e.includes('not verified'))).toBe(true);
+    expect(res.errors.some(e => e.includes('Rule 8') && e.includes('not verified'))).toBe(true);
   });
 });

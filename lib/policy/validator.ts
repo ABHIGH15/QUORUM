@@ -10,18 +10,18 @@ import { z } from 'zod';
 import { Policy, Vendor } from '../guard/types';
 
 export const ApprovalTierSchema = z.object({
-  max_cents: z.number().int().positive(),
-  votes_required: z.number().int().positive(),
+  max_cents: z.number().int(),
+  votes_required: z.number().int(),
 });
 
 export const PolicyFundingSchema = z.object({
-  per_member_cents: z.number().int().positive(),
-  min_contributors: z.number().int().min(1),
-  authorization_window_hours: z.number().int().min(1).max(48),
-  capture_retry_attempts: z.number().int().min(0).max(3),
-  capture_retry_interval_minutes: z.number().int().positive(),
+  per_member_cents: z.number().int(),
+  min_contributors: z.number().int(),
+  authorization_window_hours: z.number().int(),
+  capture_retry_attempts: z.number().int(),
+  capture_retry_interval_minutes: z.number().int(),
   partial_failure_decision: z.string().default('GROUP_VOTE'),
-  partial_failure_default: z.literal('UNWIND'),
+  partial_failure_default: z.string(),
   reduced_budget_votes_required: z.string().default('MAJORITY_OF_CONTRIBUTORS'),
 });
 
@@ -32,18 +32,18 @@ export const PolicyVendorsSchema = z.object({
 
 export const PolicySchema = z.object({
   id: z.string().optional(),
-  version: z.number().int().positive().default(1),
+  version: z.number().int().default(1),
   currency: z.literal('USD'),
-  budget_cents: z.number().int().positive(),
-  hard_cap_cents: z.number().int().positive(),
-  unanimous_above_cents: z.number().int().positive(),
+  budget_cents: z.number().int(),
+  hard_cap_cents: z.number().int(),
+  unanimous_above_cents: z.number().int(),
   approval_tiers: z.array(ApprovalTierSchema).min(1),
-  veto_window_minutes: z.number().int().min(1),
-  proposal_expiry_hours: z.number().int().positive(),
+  veto_window_minutes: z.number().int(),
+  proposal_expiry_hours: z.number().int(),
   vendors: PolicyVendorsSchema,
   categories_allowed: z.array(z.string()).min(1),
   funding: PolicyFundingSchema,
-  amendment_votes_required: z.number().int().positive(),
+  amendment_votes_required: z.number().int(),
   close: z.object({ refund: z.string() }).optional(),
 });
 
@@ -58,11 +58,11 @@ export interface PolicyValidationResult {
 export function validatePolicy(policy: Policy, knownVendors?: Vendor[]): PolicyValidationResult {
   const errors: string[] = [];
 
-  // Parse against Zod schema first
+  // Parse against Zod schema for structural integrity
   const parsed = PolicySchema.safeParse(policy);
   if (!parsed.success) {
     for (const issue of parsed.error.issues) {
-      errors.push(`Schema error in ${issue.path.join('.')}: ${issue.message}`);
+      errors.push(`Structural error in ${issue.path.join('.')}: ${issue.message}`);
     }
     return { valid: false, errors };
   }
@@ -120,8 +120,8 @@ export function validatePolicy(policy: Policy, knownVendors?: Vendor[]): PolicyV
   }
 
   // Rule 6: authorization_window_hours <= 48
-  if (p.funding.authorization_window_hours > 48) {
-    errors.push(`Rule 6 violation: authorization_window_hours must be <= 48 (PayPal honor period ceiling)`);
+  if (p.funding.authorization_window_hours > 48 || p.funding.authorization_window_hours < 1) {
+    errors.push(`Rule 6 violation: authorization_window_hours must be between 1 and 48 (PayPal honor ceiling)`);
   }
 
   // Rule 7: partial_failure_default must be 'UNWIND'

@@ -1,19 +1,24 @@
 /**
  * Quorum Guard Test Suite
  * 
- * Exhaustive table-driven test cases covering:
+ * Exhaustive table-driven and property-based test cases covering:
  * - All 16 check codes
  * - Strict decision precedence (BLOCKED > VETOED > REJECTED_BY_VOTE > NEEDS_VOTES > VETO_WINDOW_OPEN > APPROVED)
- * - Exact tier boundaries ($60, $61, $150, $180, $200, $201, $350)
- * - Invariant: executionAllowed is ONLY true for APPROVED in EXECUTION phase
- * - Invariant: Pure function property (same input => same output)
+ * - Exact tier boundaries ($59, $60, $61, $149, $150, $151, $199, $200, $201, $350)
+ * - Exact budget limit ($480.00 exact vs $480.01)
+ * - Exact veto window timing (now < veto_ends_at vs now == veto_ends_at)
+ * - Voter eligibility (owner, agent, removed member, strangers must NOT count)
+ * - Vote semantics (deduplication, vote updates, proposer vote)
+ * - Property-based fuzz test with fast-check:
+ *   Guaranteed that no single voter can EVER authorize an expenditure alone when votes_required >= 2.
  */
 
 import { describe, it, expect } from 'vitest';
+import fc from 'fast-check';
 import { evaluate, explainDecision } from '../lib/guard';
 import { GuardInput, Policy, Vendor, Vote } from '../lib/guard/types';
 
-// Standard demo policy snapshot
+// Standard demo policy snapshot (§5.1)
 const basePolicy: Policy = {
   version: 1,
   currency: 'USD',
@@ -335,10 +340,129 @@ describe('Quorum Guard - Decision Precedence', () => {
   });
 });
 
-describe('Quorum Guard - Tier Boundaries & Unanimity Overrides', () => {
-  it('21. Tier 1 boundary: $60.00 requires exactly 2 votes and passes with 2', () => {
+describe('Quorum Guard - Voter Eligibility & Core Promise', () => {
+  it('21. Discards votes from non-eligible participants (strangers, removed members)', () => {
     const input = createBaseInput({
-      now: '2026-11-02T12:03:00.000Z', // Veto window ended
+      proposal: { ...createBaseInput().proposal, amount_cents: 5000 }, // needs 2 votes
+      votes: [
+        { proposal_id: 'prop_1', member_id: 'm_stranger_1', kind: 'VOTE', choice: 'APPROVE' },
+        { proposal_id: 'prop_1', member_id: 'm_removed_member', kind: 'VOTE', choice: 'APPROVE' },
+      ],
+    });
+    const result = evaluate(input);
+    expect(result.numbers.approvals).toBe(0);
+    expect(result.decision).toBe('NEEDS_VOTES');
+  });
+
+  it('22. Discards votes from AI Agent or non-contributing Organizer/Owner (I7)', () => {
+    const input = createBaseInput({
+      proposal: { ...createBaseInput().proposal, amount_cents: 5000 },
+      votes: [
+        { proposal_id: 'prop_1', member_id: 'agent_quorum', kind: 'VOTE', choice: 'APPROVE' },
+        { proposal_id: 'prop_1', member_id: 'owner_unfunded', kind: 'VOTE', choice: 'APPROVE' },
+      ],
+    });
+    const result = evaluate(input);
+    expect(result.numbers.approvals).toBe(0);
+    expect(result.decision).toBe('NEEDS_VOTES');
+  });
+
+  it('23. Non-eligible vetoes are discarded', () => {
+    const input = createBaseInput({
+      now: '2026-11-02T12:03:00.000Z',
+      proposal: { ...createBaseInput().proposal, amount_cents: 5000 },
+      votes: [
+        { proposal_id: 'prop_1', member_id: 'm_asha', kind: 'VOTE', choice: 'APPROVE' },
+        { proposal_id: 'prop_1', member_id: 'm_ben', kind: 'VOTE', choice: 'APPROVE' },
+        { proposal_id: 'prop_1', member_id: 'm_unauthorized_intruder', kind: 'VETO', choice: 'VETO' },
+      ],
+    });
+    const result = evaluate(input);
+    expect(result.decision).toBe('APPROVED');
+  });
+});
+
+describe('Quorum Guard - Vote Semantics & Deduplication', () => {
+  it('24. Deduplication: Duplicate votes from same member count exactly once', () => {
+    const input = createBaseInput({
+      proposal: { ...createBaseInput().proposal, amount_cents: 5000 }, // needs 2 votes
+      votes: [
+        { proposal_id: 'prop_1', member_id: 'm_asha', kind: 'VOTE', choice: 'APPROVE' },
+        { proposal_id: 'prop_1', member_id: 'm_asha', kind: 'VOTE', choice: 'APPROVE' }, // Duplicate!
+      ],
+    });
+    const result = evaluate(input);
+    expect(result.numbers.approvals).toBe(1);
+    expect(result.decision).toBe('NEEDS_VOTES');
+  });
+
+  it('25. Vote Updates: A member who changes their vote reflects their latest choice', () => {
+    // Asha originally approved, then changed her vote to REJECT
+    const input1 = createBaseInput({
+      proposal: { ...createBaseInput().proposal, amount_cents: 5000 },
+      votes: [
+        { proposal_id: 'prop_1', member_id: 'm_asha', kind: 'VOTE', choice: 'APPROVE', created_at: '2026-11-02T12:00:00Z' },
+        { proposal_id: 'prop_1', member_id: 'm_asha', kind: 'VOTE', choice: 'REJECT', created_at: '2026-11-02T12:01:00Z' },
+        { proposal_id: 'prop_1', member_id: 'm_ben', kind: 'VOTE', choice: 'APPROVE', created_at: '2026-11-02T12:00:00Z' },
+      ],
+    });
+    const result1 = evaluate(input1);
+    expect(result1.numbers.approvals).toBe(1); // Only Ben
+    expect(result1.decision).toBe('NEEDS_VOTES');
+
+    // Asha originally rejected, then changed to APPROVE
+    const input2 = createBaseInput({
+      now: '2026-11-02T12:03:00.000Z',
+      proposal: { ...createBaseInput().proposal, amount_cents: 5000 },
+      votes: [
+        { proposal_id: 'prop_1', member_id: 'm_asha', kind: 'VOTE', choice: 'REJECT', created_at: '2026-11-02T12:00:00Z' },
+        { proposal_id: 'prop_1', member_id: 'm_asha', kind: 'VOTE', choice: 'APPROVE', created_at: '2026-11-02T12:01:00Z' },
+        { proposal_id: 'prop_1', member_id: 'm_ben', kind: 'VOTE', choice: 'APPROVE', created_at: '2026-11-02T12:00:00Z' },
+      ],
+    });
+    const result2 = evaluate(input2);
+    expect(result2.numbers.approvals).toBe(2);
+    expect(result2.decision).toBe('APPROVED');
+  });
+
+  it("26. Proposer's own approval counts exactly once", () => {
+    const input = createBaseInput({
+      now: '2026-11-02T12:03:00.000Z',
+      proposal: {
+        ...createBaseInput().proposal,
+        created_by_kind: 'MEMBER',
+        created_by: 'm_asha',
+        amount_cents: 5000,
+      },
+      votes: [
+        { proposal_id: 'prop_1', member_id: 'm_asha', kind: 'VOTE', choice: 'APPROVE' },
+        { proposal_id: 'prop_1', member_id: 'm_ben', kind: 'VOTE', choice: 'APPROVE' },
+      ],
+    });
+    const result = evaluate(input);
+    expect(result.numbers.approvals).toBe(2);
+    expect(result.decision).toBe('APPROVED');
+  });
+});
+
+describe('Quorum Guard - Tier Boundaries & Mathematical Edges', () => {
+  it('27. Boundary $59.00: Tier 1, requires 2 votes, passes with 2', () => {
+    const input = createBaseInput({
+      now: '2026-11-02T12:03:00.000Z',
+      proposal: { ...createBaseInput().proposal, amount_cents: 5900 },
+      votes: [
+        { proposal_id: 'prop_1', member_id: 'm_asha', kind: 'VOTE', choice: 'APPROVE' },
+        { proposal_id: 'prop_1', member_id: 'm_ben', kind: 'VOTE', choice: 'APPROVE' },
+      ],
+    });
+    const result = evaluate(input);
+    expect(result.numbers.votesRequired).toBe(2);
+    expect(result.decision).toBe('APPROVED');
+  });
+
+  it('28. Boundary $60.00: Tier 1 limit, requires 2 votes, passes with 2', () => {
+    const input = createBaseInput({
+      now: '2026-11-02T12:03:00.000Z',
       proposal: { ...createBaseInput().proposal, amount_cents: 6000 },
       votes: [
         { proposal_id: 'prop_1', member_id: 'm_asha', kind: 'VOTE', choice: 'APPROVE' },
@@ -350,7 +474,7 @@ describe('Quorum Guard - Tier Boundaries & Unanimity Overrides', () => {
     expect(result.decision).toBe('APPROVED');
   });
 
-  it('22. Tier 2 boundary: $61.00 jumps to Tier 2 and requires 4 votes (2 approvals = NEEDS_VOTES)', () => {
+  it('29. Boundary $61.00: Tier 2 transition, requires 4 votes (2 approvals = NEEDS_VOTES)', () => {
     const input = createBaseInput({
       proposal: { ...createBaseInput().proposal, amount_cents: 6100 },
       votes: [
@@ -363,7 +487,23 @@ describe('Quorum Guard - Tier Boundaries & Unanimity Overrides', () => {
     expect(result.decision).toBe('NEEDS_VOTES');
   });
 
-  it('23. Tier 2 upper boundary: $150.00 requires 4 votes and passes with 4', () => {
+  it('30. Boundary $149.00: Tier 2 upper range, requires 4 votes, passes with 4', () => {
+    const input = createBaseInput({
+      now: '2026-11-02T12:03:00.000Z',
+      proposal: { ...createBaseInput().proposal, amount_cents: 14900 },
+      votes: [
+        { proposal_id: 'prop_1', member_id: 'm_asha', kind: 'VOTE', choice: 'APPROVE' },
+        { proposal_id: 'prop_1', member_id: 'm_ben', kind: 'VOTE', choice: 'APPROVE' },
+        { proposal_id: 'prop_1', member_id: 'm_chloe', kind: 'VOTE', choice: 'APPROVE' },
+        { proposal_id: 'prop_1', member_id: 'm_dev', kind: 'VOTE', choice: 'APPROVE' },
+      ],
+    });
+    const result = evaluate(input);
+    expect(result.numbers.votesRequired).toBe(4);
+    expect(result.decision).toBe('APPROVED');
+  });
+
+  it('31. Boundary $150.00: Unanimity line ceiling, requires 4 votes, passes with 4', () => {
     const input = createBaseInput({
       now: '2026-11-02T12:03:00.000Z',
       proposal: { ...createBaseInput().proposal, amount_cents: 15000 },
@@ -379,41 +519,125 @@ describe('Quorum Guard - Tier Boundaries & Unanimity Overrides', () => {
     expect(result.decision).toBe('APPROVED');
   });
 
-  it('24. Unanimity Override (Scenario S10): $180.00 requires ALL 6 eligible votes; 4 approvals = NEEDS_VOTES', () => {
+  it('32. Boundary $151.00: Unanimity line crossed! Requires ALL 6 votes; 5 approvals = NEEDS_VOTES', () => {
     const input = createBaseInput({
-      proposal: { ...createBaseInput().proposal, amount_cents: 18000 }, // > $150.00 unanimity threshold
+      proposal: { ...createBaseInput().proposal, amount_cents: 15100 },
       votes: [
         { proposal_id: 'prop_1', member_id: 'm_asha', kind: 'VOTE', choice: 'APPROVE' },
         { proposal_id: 'prop_1', member_id: 'm_ben', kind: 'VOTE', choice: 'APPROVE' },
         { proposal_id: 'prop_1', member_id: 'm_chloe', kind: 'VOTE', choice: 'APPROVE' },
         { proposal_id: 'prop_1', member_id: 'm_dev', kind: 'VOTE', choice: 'APPROVE' },
+        { proposal_id: 'prop_1', member_id: 'm_elena', kind: 'VOTE', choice: 'APPROVE' },
       ],
     });
     const result = evaluate(input);
-    expect(result.numbers.votesRequired).toBe(6); // All 6 required!
+    expect(result.numbers.votesRequired).toBe(6);
+    expect(result.numbers.approvals).toBe(5);
     expect(result.decision).toBe('NEEDS_VOTES');
   });
 
-  it('25. Hard Cap limit: $200.00 is allowed; $200.01 is BLOCKED', () => {
-    const passInput = createBaseInput({
-      proposal: { ...createBaseInput().proposal, amount_cents: 20000 },
+  it('33. Boundary $199.00: Under hard cap ($200.00), requires all 6 votes, passes with 6', () => {
+    const input = createBaseInput({
+      now: '2026-11-02T12:03:00.000Z',
+      proposal: { ...createBaseInput().proposal, amount_cents: 19900 },
+      votes: eligibleMembers.map(m => ({ proposal_id: 'prop_1', member_id: m, kind: 'VOTE', choice: 'APPROVE' })),
     });
-    const passResult = evaluate(passInput);
-    expect(passResult.checks.find(c => c.code === 'HARD_CAP_EXCEEDED')?.pass).toBe(true);
+    const result = evaluate(input);
+    expect(result.decision).toBe('APPROVED');
+  });
 
-    const failInput = createBaseInput({
-      proposal: { ...createBaseInput().proposal, amount_cents: 20001 },
+  it('34. Boundary $200.00: Exactly at hard cap, passes with 6 votes', () => {
+    const input = createBaseInput({
+      now: '2026-11-02T12:03:00.000Z',
+      proposal: { ...createBaseInput().proposal, amount_cents: 20000 },
+      votes: eligibleMembers.map(m => ({ proposal_id: 'prop_1', member_id: m, kind: 'VOTE', choice: 'APPROVE' })),
     });
-    const failResult = evaluate(failInput);
-    expect(failResult.decision).toBe('BLOCKED');
-    expect(failResult.reasonCodes).toContain('HARD_CAP_EXCEEDED');
+    const result = evaluate(input);
+    expect(result.decision).toBe('APPROVED');
+  });
+
+  it('35. Boundary $200.01 / $201.00: Exceeds hard cap by 1 cent or $1 -> BLOCKED', () => {
+    const input1 = createBaseInput({
+      proposal: { ...createBaseInput().proposal, amount_cents: 20001 },
+      votes: eligibleMembers.map(m => ({ proposal_id: 'prop_1', member_id: m, kind: 'VOTE', choice: 'APPROVE' })),
+    });
+    expect(evaluate(input1).decision).toBe('BLOCKED');
+    expect(evaluate(input1).reasonCodes).toContain('HARD_CAP_EXCEEDED');
+
+    const input2 = createBaseInput({
+      proposal: { ...createBaseInput().proposal, amount_cents: 20100 },
+      votes: eligibleMembers.map(m => ({ proposal_id: 'prop_1', member_id: m, kind: 'VOTE', choice: 'APPROVE' })),
+    });
+    expect(evaluate(input2).decision).toBe('BLOCKED');
+    expect(evaluate(input2).reasonCodes).toContain('HARD_CAP_EXCEEDED');
+  });
+
+  it('36. Exact budget spending: Spending exactly available budget ($480.00) passes; $480.01 fails', () => {
+    // Policy allowing up to $480.00 cap for this budget test
+    const highCapPolicy: Policy = {
+      ...basePolicy,
+      hard_cap_cents: 48000,
+      unanimous_above_cents: 30000,
+      approval_tiers: [{ max_cents: 48000, votes_required: 4 }],
+    };
+
+    const exactInput = createBaseInput({
+      policy: highCapPolicy,
+      funds: { availableCents: 48000, reservedCents: 0, fundingReady: true },
+      proposal: { ...createBaseInput().proposal, amount_cents: 48000 },
+    });
+    expect(evaluate(exactInput).checks.find(c => c.code === 'BUDGET_EXCEEDED')?.pass).toBe(true);
+
+    const overInput = createBaseInput({
+      policy: highCapPolicy,
+      funds: { availableCents: 48000, reservedCents: 0, fundingReady: true },
+      proposal: { ...createBaseInput().proposal, amount_cents: 48001 },
+    });
+    const overResult = evaluate(overInput);
+    expect(overResult.decision).toBe('BLOCKED');
+    expect(overResult.reasonCodes).toContain('BUDGET_EXCEEDED');
+  });
+
+  it('37. Veto timing edge: now < veto_ends_at is open; now == veto_ends_at is closed', () => {
+    const baseWindowInput = createBaseInput({
+      proposal: {
+        ...createBaseInput().proposal,
+        amount_cents: 5000,
+        veto_ends_at: '2026-11-02T12:02:00.000Z',
+      },
+      votes: [
+        { proposal_id: 'prop_1', member_id: 'm_asha', kind: 'VOTE', choice: 'APPROVE' },
+        { proposal_id: 'prop_1', member_id: 'm_ben', kind: 'VOTE', choice: 'APPROVE' },
+      ],
+    });
+
+    // 1 millisecond before: window is OPEN
+    const beforeResult = evaluate({
+      ...baseWindowInput,
+      now: '2026-11-02T12:01:59.999Z',
+    });
+    expect(beforeResult.decision).toBe('VETO_WINDOW_OPEN');
+
+    // Exactly at veto_ends_at: window is CLOSED -> APPROVED
+    const exactResult = evaluate({
+      ...baseWindowInput,
+      now: '2026-11-02T12:02:00.000Z',
+    });
+    expect(exactResult.decision).toBe('APPROVED');
+
+    // After veto_ends_at: window is CLOSED -> APPROVED
+    const afterResult = evaluate({
+      ...baseWindowInput,
+      now: '2026-11-02T12:02:00.001Z',
+    });
+    expect(afterResult.decision).toBe('APPROVED');
   });
 });
 
 describe('Quorum Guard - Phase & Invariant Properties', () => {
-  it('26. Invariant: executionAllowed is TRUE ONLY in EXECUTION phase when APPROVED', () => {
+  it('38. Invariant: executionAllowed is TRUE ONLY in EXECUTION phase when APPROVED', () => {
     const baseApprovedInput = createBaseInput({
-      now: '2026-11-02T12:03:00.000Z', // Veto window closed
+      now: '2026-11-02T12:03:00.000Z',
       proposal: { ...createBaseInput().proposal, amount_cents: 5000 },
       votes: [
         { proposal_id: 'prop_1', member_id: 'm_asha', kind: 'VOTE', choice: 'APPROVE' },
@@ -421,23 +645,12 @@ describe('Quorum Guard - Phase & Invariant Properties', () => {
       ],
     });
 
-    // PROPOSAL phase
-    const proposalResult = evaluate({ ...baseApprovedInput, phase: 'PROPOSAL' });
-    expect(proposalResult.decision).toBe('APPROVED');
-    expect(proposalResult.executionAllowed).toBe(false);
-
-    // VOTING phase
-    const votingResult = evaluate({ ...baseApprovedInput, phase: 'VOTING' });
-    expect(votingResult.decision).toBe('APPROVED');
-    expect(votingResult.executionAllowed).toBe(false);
-
-    // EXECUTION phase (Scenario S3)
-    const executionResult = evaluate({ ...baseApprovedInput, phase: 'EXECUTION' });
-    expect(executionResult.decision).toBe('APPROVED');
-    expect(executionResult.executionAllowed).toBe(true);
+    expect(evaluate({ ...baseApprovedInput, phase: 'PROPOSAL' }).executionAllowed).toBe(false);
+    expect(evaluate({ ...baseApprovedInput, phase: 'VOTING' }).executionAllowed).toBe(false);
+    expect(evaluate({ ...baseApprovedInput, phase: 'EXECUTION' }).executionAllowed).toBe(true);
   });
 
-  it('27. Invariant: Purity / Determinism - 20 identical calls yield identical results', () => {
+  it('39. Invariant: Purity / Determinism - 20 identical calls yield identical results', () => {
     const input = createBaseInput({
       proposal: { ...createBaseInput().proposal, amount_cents: 14500 },
       votes: [
@@ -452,7 +665,7 @@ describe('Quorum Guard - Phase & Invariant Properties', () => {
     }
   });
 
-  it('28. Explanation generator: produces clean human-readable template for Why? modal', () => {
+  it('40. Explanation generator: produces clean human-readable template for Why? modal', () => {
     const input = createBaseInput({
       proposal: { ...createBaseInput().proposal, amount_cents: 35000 },
     });
@@ -462,5 +675,84 @@ describe('Quorum Guard - Phase & Invariant Properties', () => {
     expect(explanation).toContain('HARD_CAP_EXCEEDED');
     expect(explanation).toContain('$350.00');
     expect(explanation).toContain('Maximum allowed spending under current policy and available budget');
+  });
+});
+
+describe('Quorum Guard - Property-Based Fuzz Testing (fast-check)', () => {
+  it('41. Core Promise: No single voter can EVER authorize an expenditure alone when votes_required >= 2', () => {
+    const validChoices: ('APPROVE' | 'REJECT')[] = ['APPROVE', 'REJECT'];
+
+    fc.assert(
+      fc.property(
+        // Pick any single voter from eligible members
+        fc.constantFrom(...eligibleMembers),
+        // Pick random number of duplicate votes by that voter (1 to 10 duplicate vote entries)
+        fc.integer({ min: 1, max: 10 }),
+        // Pick vote choice (APPROVE or REJECT)
+        fc.constantFrom(...validChoices),
+        // Pick an arbitrary amount from $1.00 to $200.00
+        fc.integer({ min: 100, max: 20000 }),
+        (singleVoterId, voteCount, choice, amountCents) => {
+          // Construct vote list where ONLY this single voter voted
+          const votesList: Vote[] = Array.from({ length: voteCount }, () => ({
+            proposal_id: 'prop_test',
+            member_id: singleVoterId,
+            kind: 'VOTE',
+            choice,
+          }));
+
+          const input = createBaseInput({
+            now: '2026-11-02T12:05:00.000Z', // Veto window ended
+            proposal: {
+              ...createBaseInput().proposal,
+              amount_cents: amountCents,
+            },
+            votes: votesList,
+            eligibleVoters: [...eligibleMembers], // 6 eligible voters
+          });
+
+          const result = evaluate(input);
+
+          // All tiers in demo policy require at least 2 votes
+          // Therefore, a single voter must NEVER result in APPROVED or executionAllowed!
+          expect(result.decision).not.toBe('APPROVED');
+          expect(result.executionAllowed).toBe(false);
+          expect(['NEEDS_VOTES', 'REJECTED_BY_VOTE', 'BLOCKED']).toContain(result.decision);
+        }
+      ),
+      { numRuns: 200 }
+    );
+  });
+
+  it('42. Core Promise: Random vote sets with strictly fewer approvals than votesRequired NEVER approve', () => {
+    fc.assert(
+      fc.property(
+        // Random subset of eligible voters who approve (0 to 3 voters for a tier requiring 4)
+        fc.subarray(eligibleMembers, { minLength: 0, maxLength: 3 }),
+        (approvingVoters) => {
+          const votesList: Vote[] = approvingVoters.map(id => ({
+            proposal_id: 'prop_test',
+            member_id: id,
+            kind: 'VOTE',
+            choice: 'APPROVE',
+          }));
+
+          const input = createBaseInput({
+            now: '2026-11-02T12:05:00.000Z',
+            proposal: {
+              ...createBaseInput().proposal,
+              amount_cents: 14500, // Tier 2: requires 4 votes
+            },
+            votes: votesList,
+            eligibleVoters: [...eligibleMembers],
+          });
+
+          const result = evaluate(input);
+          expect(result.decision).not.toBe('APPROVED');
+          expect(result.executionAllowed).toBe(false);
+        }
+      ),
+      { numRuns: 100 }
+    );
   });
 });

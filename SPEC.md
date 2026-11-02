@@ -717,7 +717,7 @@ PayPal Payouts enforces idempotency on `sender_batch_header.sender_batch_id`. Re
   ]
 }
 ```
-The application treats this error as confirmation that the batch was already accepted and queries `GET /v1/payments/payouts/{batch_id}` to reconcile status.
+**Recovery Matching Rule:** `USER_BUSINESS_ERROR` is a generic PayPal error name. In the payment service, never match on the name alone. Match strictly on `details[].field === "SENDER_BATCH_ID"` and `details[].issue` containing `"already exists"`. When matched, follow the `self` link (or query `GET /v1/payments/payouts/{batch_id}`) and adopt the existing batch's status. This ensures a retry after a process crash or network timeout resumes tracking the payout instead of failing.
 
 ### 8.5 Webhooks & Deduplication
 - Subscribed Events: `CHECKOUT.ORDER.APPROVED`, `PAYMENT.CAPTURE.COMPLETED`, `PAYMENT.CAPTURE.DENIED`, `PAYMENT.CAPTURE.REFUNDED`, `PAYMENT.PAYOUTSBATCH.SUCCESS`, `PAYMENT.PAYOUTS-ITEM.SUCCEEDED`, `PAYMENT.PAYOUTS-ITEM.DENIED`.
@@ -726,7 +726,7 @@ The application treats this error as confirmation that the batch was already acc
   2. `INSERT INTO webhook_events (paypal_event_id, ...) ON CONFLICT DO NOTHING`. If duplicate, return HTTP 200 immediately.
   3. Apply state transition and ledger event inside a database transaction.
 
-### 8.5 Lazy State Synchronization (`tick(groupId)`)
+### 8.6 Lazy State Synchronization (`tick(groupId)`)
 To avoid background worker costs and render free-tier sleep issues, time-dependent transitions are evaluated lazily via `tick(groupId)`:
 - Invoked on: Every page request, proposal action, member vote, and webhook delivery.
 - Checks:
@@ -736,7 +736,7 @@ To avoid background worker costs and render free-tier sleep issues, time-depende
 - Webhook deliveries: When a sleeping Render web service wakes on incoming webhook traffic, `tick()` and webhook deduplication guarantee reliable recovery.
 - **[VERIFY]** The claim that "PayPal retries failed webhook deliveries up to 25 times across 3 days" originates from third-party guides; verify against PayPal's official platform documentation during webhook setup.
 
-### 8.6 Hosting, Keep-Alive, & "Zero-Cost Scheduler"
+### 8.7 Hosting, Keep-Alive, & "Zero-Cost Scheduler"
 - **Render Deployment:** Free web service tier eligible for the Render Hackathon prize. Note that Render provides 750 free instance hours per month (a 31-day month consumes ~744 hours for 1 service). Do not deploy a second service under the same free account.
 - **Dual-Purpose Keep-Alive Ping:** Configure a free external monitor (e.g. UptimeRobot or GitHub Actions scheduled curl) to ping `GET https://<app>.onrender.com/api/health` every 10 minutes.
 - **Automated Deadline Processing (Free Scheduler):** Inside `/api/health`:

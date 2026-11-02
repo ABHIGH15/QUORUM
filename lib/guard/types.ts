@@ -64,7 +64,7 @@ export interface GroupSnapshot {
 export interface ProposalSnapshot {
   id: string;
   group_id: string;
-  type: 'PURCHASE' | 'POLICY_AMENDMENT' | 'ACCEPT_REDUCED_BUDGET' | 'UNWIND_FUNDING';
+  type: 'PURCHASE' | 'POLICY_AMENDMENT' | 'ACCEPT_REDUCED_BUDGET' | 'UNWIND_FUNDING' | (string & {});
   status: string;
   created_by_kind: 'AGENT' | 'MEMBER' | 'SYSTEM';
   created_by?: string;

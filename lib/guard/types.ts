@@ -58,7 +58,22 @@ export interface Policy {
 export interface GroupSnapshot {
   id: string;
   mode: 'POOLED' | 'PURCHASER';
-  status: string;
+  status: 'DRAFT' | 'FUNDING' | 'ACTIVE' | 'CLOSING' | 'CLOSED' | (string & {});
+}
+
+export interface FundingRoundSnapshot {
+  id: string;
+  status:
+    | 'OPEN'
+    | 'CAPTURING'
+    | 'FUNDED'
+    | 'PARTIAL_FAILURE'
+    | 'AWAITING_GROUP_DECISION'
+    | 'FUNDED_REDUCED'
+    | 'UNWINDING'
+    | 'UNWOUND'
+    | 'CANCELLED'
+    | (string & {});
 }
 
 export interface ProposalSnapshot {
@@ -107,6 +122,7 @@ export interface GuardInput {
   now: string; // Injected ISO timestamp for deterministic evaluation
   policy: Policy;
   group: GroupSnapshot;
+  fundingRound?: FundingRoundSnapshot;
   proposal: ProposalSnapshot;
   votes: Vote[];
   eligibleVoters: string[];

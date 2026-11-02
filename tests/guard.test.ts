@@ -315,11 +315,11 @@ describe('Quorum Guard - Fail-Closed Degenerate & Edge Protections', () => {
   });
 
   it('18. Bug Fix 2: S4 Funding Proposals (ACCEPT_REDUCED_BUDGET & UNWIND_FUNDING) succeed during partial failure', () => {
-    // During S4, the group is in PARTIAL_FAILURE and funding is not ready.
-    // ACCEPT_REDUCED_BUDGET must evaluate without being blocked!
+    // In production, during partial failure the group is in 'FUNDING' and fundingRound is in 'AWAITING_GROUP_DECISION'
     const s4Input = createBaseInput({
       now: '2026-11-02T12:05:00.000Z',
-      group: { id: 'grp_demo', mode: 'POOLED', status: 'PARTIAL_FAILURE' },
+      group: { id: 'grp_demo', mode: 'POOLED', status: 'FUNDING' },
+      fundingRound: { id: 'round_1', status: 'AWAITING_GROUP_DECISION' },
       funds: { availableCents: 40000, reservedCents: 0, fundingReady: false },
       proposal: {
         id: 'prop_s4_reduced',
@@ -341,13 +341,15 @@ describe('Quorum Guard - Fail-Closed Degenerate & Edge Protections', () => {
 
     const s4Result = evaluate(s4Input);
     expect(s4Result.reasonCodes).not.toContain('GROUP_NOT_ACTIVE');
+    expect(s4Result.reasonCodes).not.toContain('ROUND_NOT_AWAITING_DECISION');
     expect(s4Result.reasonCodes).not.toContain('FUNDING_NOT_READY');
     expect(s4Result.decision).toBe('APPROVED');
 
     // UNWIND_FUNDING during AWAITING_GROUP_DECISION
     const unwindInput = createBaseInput({
       now: '2026-11-02T12:05:00.000Z',
-      group: { id: 'grp_demo', mode: 'POOLED', status: 'AWAITING_GROUP_DECISION' },
+      group: { id: 'grp_demo', mode: 'POOLED', status: 'FUNDING' },
+      fundingRound: { id: 'round_1', status: 'AWAITING_GROUP_DECISION' },
       funds: { availableCents: 40000, reservedCents: 0, fundingReady: false },
       proposal: {
         id: 'prop_unwind',
@@ -368,6 +370,112 @@ describe('Quorum Guard - Fail-Closed Degenerate & Edge Protections', () => {
     });
     const unwindResult = evaluate(unwindInput);
     expect(unwindResult.decision).toBe('APPROVED');
+
+    // Negative 1: ACCEPT_REDUCED_BUDGET when group is ACTIVE is strictly BLOCKED
+    // (Budget changes in ACTIVE status must go through POLICY_AMENDMENT)
+    const activeGroupInput = createBaseInput({
+      ...s4Input,
+      group: { id: 'grp_demo', mode: 'POOLED', status: 'ACTIVE' },
+    });
+    const activeGroupResult = evaluate(activeGroupInput);
+    expect(activeGroupResult.decision).toBe('BLOCKED');
+    expect(activeGroupResult.reasonCodes).toContain('GROUP_NOT_ACTIVE');
+
+    // Negative 2: ACCEPT_REDUCED_BUDGET when group is CLOSING is strictly BLOCKED
+    const closingGroupInput = createBaseInput({
+      ...s4Input,
+      group: { id: 'grp_demo', mode: 'POOLED', status: 'CLOSING' },
+    });
+    const closingGroupResult = evaluate(closingGroupInput);
+    expect(closingGroupResult.decision).toBe('BLOCKED');
+    expect(closingGroupResult.reasonCodes).toContain('GROUP_NOT_ACTIVE');
+
+    // Negative 3: S4 proposal when round is not in AWAITING_GROUP_DECISION (e.g. CAPTURING)
+    const capturingRoundInput = createBaseInput({
+      ...s4Input,
+      fundingRound: { id: 'round_1', status: 'CAPTURING' },
+    });
+    const capturingRoundResult = evaluate(capturingRoundInput);
+    expect(capturingRoundResult.decision).toBe('BLOCKED');
+    expect(capturingRoundResult.reasonCodes).toContain('ROUND_NOT_AWAITING_DECISION');
+
+    // Negative 4: S4 proposal when fundingRound snapshot is omitted
+    const missingRoundInput = createBaseInput({
+      ...s4Input,
+      fundingRound: undefined,
+    });
+    const missingRoundResult = evaluate(missingRoundInput);
+    expect(missingRoundResult.decision).toBe('BLOCKED');
+    expect(missingRoundResult.reasonCodes).toContain('ROUND_NOT_AWAITING_DECISION');
+  });
+
+  it('18b. Bug Fix: POLICY_AMENDMENT requires >= 2 votes, >= 2 eligible voters, and ACTIVE group status', () => {
+    // Negative 1: Single voter cannot amend policy alone (requires >= 2 eligible members)
+    const singleVoterAmendment = createBaseInput({
+      now: '2026-11-02T12:05:00.000Z',
+      proposal: {
+        id: 'prop_amend_1',
+        group_id: 'grp_demo',
+        type: 'POLICY_AMENDMENT',
+        status: 'OPEN',
+        created_by_kind: 'MEMBER',
+        created_by: 'm_asha',
+        policy_version: 1,
+        payload: { hard_cap_cents: 30000 },
+        veto_ends_at: '2026-11-02T12:02:00.000Z',
+      },
+      eligibleVoters: ['m_asha'],
+      votes: [
+        { proposal_id: 'prop_amend_1', member_id: 'm_asha', kind: 'VOTE', choice: 'APPROVE' },
+      ],
+    });
+    const singleVoterResult = evaluate(singleVoterAmendment);
+    expect(singleVoterResult.decision).toBe('BLOCKED');
+    expect(singleVoterResult.reasonCodes).toContain('INSUFFICIENT_ELIGIBLE_VOTERS');
+
+    // Negative 2: Vote floor of >= 2 enforced even if policy specifies amendment_votes_required: 1
+    const floorAmendment = createBaseInput({
+      now: '2026-11-02T12:05:00.000Z',
+      policy: { ...basePolicy, amendment_votes_required: 1 },
+      proposal: {
+        id: 'prop_amend_2',
+        group_id: 'grp_demo',
+        type: 'POLICY_AMENDMENT',
+        status: 'OPEN',
+        created_by_kind: 'MEMBER',
+        created_by: 'm_asha',
+        policy_version: 1,
+        payload: { hard_cap_cents: 30000 },
+        veto_ends_at: '2026-11-02T12:02:00.000Z',
+      },
+      eligibleVoters: ['m_asha', 'm_ben', 'm_chloe'],
+      votes: [
+        { proposal_id: 'prop_amend_2', member_id: 'm_asha', kind: 'VOTE', choice: 'APPROVE' },
+      ],
+    });
+    const floorResult = evaluate(floorAmendment);
+    expect(floorResult.decision).toBe('NEEDS_VOTES');
+    expect(floorResult.numbers.votesRequired).toBe(2);
+
+    // Negative 3: Policy amendment in FUNDING or CLOSING is BLOCKED with GROUP_NOT_ACTIVE
+    const fundingAmendment = createBaseInput({
+      ...floorAmendment,
+      group: { id: 'grp_demo', mode: 'POOLED', status: 'FUNDING' },
+    });
+    const fundingAmendResult = evaluate(fundingAmendment);
+    expect(fundingAmendResult.decision).toBe('BLOCKED');
+    expect(fundingAmendResult.reasonCodes).toContain('GROUP_NOT_ACTIVE');
+
+    // Positive: 2 approvals with 3 eligible voters passes
+    const passAmendment = createBaseInput({
+      ...floorAmendment,
+      votes: [
+        { proposal_id: 'prop_amend_2', member_id: 'm_asha', kind: 'VOTE', choice: 'APPROVE' },
+        { proposal_id: 'prop_amend_2', member_id: 'm_ben', kind: 'VOTE', choice: 'APPROVE' },
+      ],
+    });
+    const passResult = evaluate(passAmendment);
+    expect(passResult.decision).toBe('APPROVED');
   });
 
   it('19. Bug Fix 3: INVALID_AMOUNT blocks null, 0, negative, and fractional cents', () => {
@@ -896,10 +1004,30 @@ describe('Quorum Guard - Property-Based Fuzz Testing (fast-check)', () => {
         // Random available budget
         fc.integer({ min: 0, max: 50000 }),
         (voters, approvers, rejecters, vetoers, amount, available) => {
+          // Explicit timestamp sequencing so vote precedence is mathematically unambiguous:
+          // Approvals @ 12:01:10, Rejections @ 12:01:30 (overrides approval), Vetoes @ 12:01:50
           const votesList: Vote[] = [
-            ...approvers.map(id => ({ proposal_id: 'prop_1', member_id: id, kind: 'VOTE' as const, choice: 'APPROVE' as const })),
-            ...rejecters.map(id => ({ proposal_id: 'prop_1', member_id: id, kind: 'VOTE' as const, choice: 'REJECT' as const })),
-            ...vetoers.map(id => ({ proposal_id: 'prop_1', member_id: id, kind: 'VETO' as const, choice: 'VETO' as const })),
+            ...approvers.map((id, idx) => ({
+              proposal_id: 'prop_1',
+              member_id: id,
+              kind: 'VOTE' as const,
+              choice: 'APPROVE' as const,
+              created_at: `2026-11-02T12:01:${String(10 + (idx % 15)).padStart(2, '0')}Z`,
+            })),
+            ...rejecters.map((id, idx) => ({
+              proposal_id: 'prop_1',
+              member_id: id,
+              kind: 'VOTE' as const,
+              choice: 'REJECT' as const,
+              created_at: `2026-11-02T12:01:${String(30 + (idx % 15)).padStart(2, '0')}Z`,
+            })),
+            ...vetoers.map(id => ({
+              proposal_id: 'prop_1',
+              member_id: id,
+              kind: 'VETO' as const,
+              choice: 'VETO' as const,
+              created_at: '2026-11-02T12:01:50Z',
+            })),
           ];
 
           const input = createBaseInput({
@@ -922,16 +1050,25 @@ describe('Quorum Guard - Property-Based Fuzz Testing (fast-check)', () => {
           const result = evaluate(input);
 
           if (result.decision === 'APPROVED') {
-            // Invariant 1: At least 2 distinct eligible approvers
-            expect(result.numbers.approvals).toBeGreaterThanOrEqual(2);
-            // Invariant 2: Valid positive amount within cap and available budget
-            expect(result.numbers.amountCents).toBeGreaterThanOrEqual(1);
-            expect(result.numbers.amountCents).toBeLessThanOrEqual(basePolicy.hard_cap_cents);
-            expect(result.numbers.amountCents).toBeLessThanOrEqual(available);
-            // Invariant 3: No veto active
-            expect(result.numbers.vetoActive).toBe(false);
-            // Invariant 4: At least 2 eligible voters in group
-            expect(result.numbers.eligibleVoters).toBeGreaterThanOrEqual(2);
+            // Independent Oracle: directly computed from raw test input vectors, NOT from result.numbers!
+            const eligibleSet = new Set(voters);
+            const eligibleVetoers = vetoers.filter(id => eligibleSet.has(id));
+            const eligibleRejecters = new Set(rejecters.filter(id => eligibleSet.has(id)));
+            const oracleApprovers = approvers.filter(
+              id => eligibleSet.has(id) && !eligibleRejecters.has(id) && !eligibleVetoers.includes(id)
+            );
+            const distinctOracleApprovals = new Set(oracleApprovers).size;
+
+            // Invariant 1: Oracle verifies >= 2 distinct eligible approvals
+            expect(distinctOracleApprovals).toBeGreaterThanOrEqual(2);
+            // Invariant 2: No eligible member cast a veto
+            expect(eligibleVetoers.length).toBe(0);
+            // Invariant 3: Raw input amount is strictly positive and within hard cap and available budget
+            expect(amount).toBeGreaterThanOrEqual(1);
+            expect(amount).toBeLessThanOrEqual(basePolicy.hard_cap_cents);
+            expect(amount).toBeLessThanOrEqual(available);
+            // Invariant 4: Raw eligible voters count is >= 2
+            expect(voters.length).toBeGreaterThanOrEqual(2);
           }
         }
       ),

@@ -6,7 +6,7 @@
  * - Injected clock (`input.now`) ensures 100% deterministic testing
  * - Single source of truth for spending authorization
  * - Guaranteed: No single voter can authorize an expenditure alone
- * - Fail-closed by default: degenerate inputs (0 voters, null amounts, bad types) are strictly BLOCKED
+ * - Fail-closed by default: degenerate inputs (0 voters, null amounts, bad types, unparseable now) are strictly BLOCKED
  */
 
 import {
@@ -32,6 +32,7 @@ export function evaluate(input: GuardInput): GuardResult {
     now,
     policy,
     group,
+    fundingRound,
     proposal,
     votes,
     eligibleVoters,
@@ -45,6 +46,7 @@ export function evaluate(input: GuardInput): GuardResult {
 
   const rawAmount = proposal.amount_cents;
   const isPurchase = proposal.type === 'PURCHASE';
+  const isAmendment = proposal.type === 'POLICY_AMENDMENT';
   const isFundingDecision = proposal.type === 'ACCEPT_REDUCED_BUDGET' || proposal.type === 'UNWIND_FUNDING';
 
   const hardCapCents = policy.hard_cap_cents;
@@ -55,6 +57,18 @@ export function evaluate(input: GuardInput): GuardResult {
   // ---------------------------------------------------------------------------
   // 1. Structural & Fail-Closed Integrity Checks (can cause BLOCKED)
   // ---------------------------------------------------------------------------
+
+  // INVALID_TIMESTAMP (now must be a valid parseable ISO timestamp)
+  const nowMs = new Date(now).getTime();
+  const isNowValid = !Number.isNaN(nowMs);
+  checks.push({
+    code: 'INVALID_TIMESTAMP',
+    pass: isNowValid,
+    detail: isNowValid
+      ? `Evaluation timestamp '${now}' is valid`
+      : `Unparseable or invalid timestamp '${now}'`,
+  });
+  if (!isNowValid) reasonCodes.push('INVALID_TIMESTAMP');
 
   // PROPOSAL_TYPE_INVALID
   const isTypeValid = VALID_PROPOSAL_TYPES.includes(proposal.type);
@@ -67,16 +81,24 @@ export function evaluate(input: GuardInput): GuardResult {
   });
   if (!isTypeValid) reasonCodes.push('PROPOSAL_TYPE_INVALID');
 
-  // INSUFFICIENT_ELIGIBLE_VOTERS (Promise: No individual can authorize alone)
+  // INSUFFICIENT_ELIGIBLE_VOTERS
+  // Central Promise: No individual member can authorize alone.
+  // Both PURCHASE and POLICY_AMENDMENT require at least 2 eligible voters and >= votes_required.
   let eligibleVotersPass = true;
   let eligibleVotersDetail = `Eligible voters count: ${eligibleVotersCount}`;
   if (isPurchase) {
-    // For a purchase, there must be at least 2 eligible voters to prevent unilateral authorization
     eligibleVotersPass = eligibleVotersCount >= 2;
     eligibleVotersDetail = eligibleVotersPass
-      ? `Eligible voters count (${eligibleVotersCount}) satisfies group governance minimum (>= 2)`
+      ? `Eligible voters count (${eligibleVotersCount}) satisfies purchase minimum (>= 2)`
       : `Insufficient eligible voters (${eligibleVotersCount}). Purchases mandate at least 2 eligible members to prevent unilateral spend`;
+  } else if (isAmendment) {
+    const minRequiredForAmendment = Math.max(2, policy.amendment_votes_required);
+    eligibleVotersPass = eligibleVotersCount >= minRequiredForAmendment;
+    eligibleVotersDetail = eligibleVotersPass
+      ? `Eligible voters count (${eligibleVotersCount}) satisfies amendment minimum (>= ${minRequiredForAmendment})`
+      : `Insufficient eligible voters (${eligibleVotersCount}). Amendments mandate at least ${minRequiredForAmendment} eligible members to prevent unilateral rule rewrite`;
   } else {
+    // Funding decision (majority of captured contributors)
     eligibleVotersPass = eligibleVotersCount >= 1;
   }
   checks.push({
@@ -113,27 +135,35 @@ export function evaluate(input: GuardInput): GuardResult {
   const remainingAfterCents = availableCents - amountCents;
 
   // GROUP_NOT_ACTIVE
-  // In S4, ACCEPT_REDUCED_BUDGET and UNWIND_FUNDING execute while the group is in
-  // PARTIAL_FAILURE or AWAITING_GROUP_DECISION to resolve the funding failure.
+  // Enforces valid lifecycle status from groups.status ('DRAFT','FUNDING','ACTIVE','CLOSING','CLOSED')
   let groupActivePass = false;
   let groupActiveDetail = '';
   if (isFundingDecision) {
-    const allowedFundingStates = ['PARTIAL_FAILURE', 'AWAITING_GROUP_DECISION', 'ACTIVE'];
-    groupActivePass = allowedFundingStates.includes(group.status);
-    groupActiveDetail = groupActivePass
-      ? `Group status '${group.status}' permits funding governance proposals`
-      : `Group status '${group.status}' cannot process funding decisions (expected: ${allowedFundingStates.join(', ')})`;
+    // In production, during partial failure the group is in 'FUNDING'.
+    // If group is 'ACTIVE', budget changes MUST go through POLICY_AMENDMENT, not funding unwinds!
+    if (group.status === 'ACTIVE') {
+      groupActivePass = false;
+      groupActiveDetail = 'Funding proposals are forbidden in ACTIVE group status (budget changes require a POLICY_AMENDMENT proposal)';
+    } else if (group.status === 'CLOSING' || group.status === 'CLOSED') {
+      groupActivePass = false;
+      groupActiveDetail = `Group status is '${group.status}'; funding decisions cannot be processed in closing/closed groups`;
+    } else {
+      groupActivePass = group.status === 'FUNDING';
+      groupActiveDetail = groupActivePass
+        ? `Group status '${group.status}' permits funding governance proposals`
+        : `Group status '${group.status}' cannot process funding decisions (expected: FUNDING)`;
+    }
   } else if (isPurchase) {
     groupActivePass = group.status === 'ACTIVE' && (group.mode !== 'POOLED' || funds.fundingReady);
     groupActiveDetail = groupActivePass
       ? `Group ${group.id} is ACTIVE and funding pool is verified`
       : `Group status is '${group.status}' (fundingReady: ${funds.fundingReady})`;
   } else {
-    // Policy amendment or other
+    // Policy amendment
     groupActivePass = group.status === 'ACTIVE';
     groupActiveDetail = groupActivePass
       ? `Group ${group.id} is ACTIVE`
-      : `Group status is '${group.status}'; must be ACTIVE`;
+      : `Group status is '${group.status}'; amendments require ACTIVE group status`;
   }
   checks.push({
     code: 'GROUP_NOT_ACTIVE',
@@ -142,10 +172,27 @@ export function evaluate(input: GuardInput): GuardResult {
   });
   if (!groupActivePass) reasonCodes.push('GROUP_NOT_ACTIVE');
 
+  // ROUND_NOT_AWAITING_DECISION (Specific to S4 funding decision proposals)
+  let roundStatusPass = true;
+  let roundStatusDetail = 'Round status check not applicable';
+  if (isFundingDecision) {
+    roundStatusPass = fundingRound?.status === 'AWAITING_GROUP_DECISION';
+    roundStatusDetail = roundStatusPass
+      ? `Funding round is in 'AWAITING_GROUP_DECISION'`
+      : `Funding round status is '${fundingRound?.status ?? 'none'}'; expected 'AWAITING_GROUP_DECISION'`;
+  }
+  checks.push({
+    code: 'ROUND_NOT_AWAITING_DECISION',
+    pass: roundStatusPass,
+    detail: roundStatusDetail,
+  });
+  if (!roundStatusPass) reasonCodes.push('ROUND_NOT_AWAITING_DECISION');
+
   // PROPOSAL_EXPIRED
   const isExpired = Boolean(
+    isNowValid &&
     proposal.voting_deadline &&
-    new Date(now).getTime() > new Date(proposal.voting_deadline).getTime() &&
+    nowMs > new Date(proposal.voting_deadline).getTime() &&
     proposal.status === 'OPEN'
   );
   checks.push({
@@ -286,8 +333,6 @@ export function evaluate(input: GuardInput): GuardResult {
   if (!budgetPass) reasonCodes.push('BUDGET_EXCEEDED');
 
   // FUNDING_NOT_READY
-  // Only applies to PURCHASE proposals! Funding decision proposals exist specifically
-  // when funding is not ready to unwind or adjust the budget.
   let fundingReadyPass = true;
   let fundingReadyDetail = 'Funding ready check not applicable';
   if (isPurchase && group.mode === 'POOLED') {
@@ -321,7 +366,6 @@ export function evaluate(input: GuardInput): GuardResult {
   let votesRequired: number;
   if (isPurchase) {
     if (!amountValid || amountCents <= 0) {
-      // Degenerate/invalid amounts require unanimity and are blocked anyway
       votesRequired = Math.max(2, eligibleVotersCount);
     } else if (amountCents > unanimousAboveCents) {
       // Unanimity override: mandates all eligible voters (at least 2)
@@ -336,8 +380,9 @@ export function evaluate(input: GuardInput): GuardResult {
         votesRequired = Math.max(2, eligibleVotersCount);
       }
     }
-  } else if (proposal.type === 'POLICY_AMENDMENT') {
-    votesRequired = Math.max(1, policy.amendment_votes_required);
+  } else if (isAmendment) {
+    // Amendments rewrite group policy: floor of at least 2 votes to prevent unilateral change
+    votesRequired = Math.max(2, policy.amendment_votes_required);
   } else if (isFundingDecision) {
     // Majority of eligible contributors
     votesRequired = Math.max(1, Math.floor(eligibleVotersCount / 2) + 1);
@@ -360,22 +405,19 @@ export function evaluate(input: GuardInput): GuardResult {
 
   // Deterministic sorting comparator
   const sortedVotes = [...votes].sort((a, b) => {
-    if (a.created_at && b.created_at) {
-      const diff = new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
-      if (diff !== 0) return diff;
-    }
+    const timeA = a.created_at ? new Date(a.created_at).getTime() : 0;
+    const timeB = b.created_at ? new Date(b.created_at).getTime() : 0;
+    if (timeA !== timeB) return timeA - timeB;
     const idA = a.id ?? `${a.proposal_id}_${a.member_id}_${a.kind}_${a.choice}`;
     const idB = b.id ?? `${b.proposal_id}_${b.member_id}_${b.kind}_${b.choice}`;
     return idA.localeCompare(idB);
   });
 
   for (const vote of sortedVotes) {
-    // BUG FIX 5: Votes must belong to THIS proposal!
     if (vote.proposal_id !== proposal.id) {
       continue;
     }
 
-    // Must be an eligible voter for this group/round
     if (!eligibleVoters.includes(vote.member_id)) {
       continue;
     }
@@ -383,7 +425,6 @@ export function evaluate(input: GuardInput): GuardResult {
     if (vote.kind === 'VETO' || vote.choice === 'VETO') {
       memberVetoesMap.set(vote.member_id, vote);
     } else if (vote.kind === 'VOTE') {
-      // Latest vote by created_at / deterministic sequence overwrites earlier choice
       memberVotesMap.set(vote.member_id, vote);
     }
   }
@@ -431,8 +472,6 @@ export function evaluate(input: GuardInput): GuardResult {
   if (!hasEnoughApprovals) reasonCodes.push('NEEDS_VOTES');
 
   // VETO_WINDOW_OPEN
-  // BUG FIX 4: If policy mandates a veto window, a missing or unset veto_ends_at
-  // must NEVER skip the window. It means the veto window has not yet concluded.
   let vetoWindowEnded = true;
   let vetoWindowDetail = 'Veto window not applicable or ended';
   if (hasEnoughApprovals) {
@@ -440,8 +479,10 @@ export function evaluate(input: GuardInput): GuardResult {
       if (!proposal.veto_ends_at) {
         vetoWindowEnded = false;
         vetoWindowDetail = `Veto window is required (${policy.veto_window_minutes}m) but proposal.veto_ends_at has not been set`;
+      } else if (!isNowValid) {
+        vetoWindowEnded = false;
+        vetoWindowDetail = 'Cannot compute veto window: evaluation timestamp is invalid';
       } else {
-        const nowMs = new Date(now).getTime();
         const vetoEndMs = new Date(proposal.veto_ends_at).getTime();
         vetoWindowEnded = nowMs >= vetoEndMs;
         vetoWindowDetail = vetoWindowEnded
@@ -466,10 +507,12 @@ export function evaluate(input: GuardInput): GuardResult {
   // ---------------------------------------------------------------------------
 
   const blockingCodes = [
+    'INVALID_TIMESTAMP',
     'PROPOSAL_TYPE_INVALID',
     'INSUFFICIENT_ELIGIBLE_VOTERS',
     'INVALID_AMOUNT',
     'GROUP_NOT_ACTIVE',
+    'ROUND_NOT_AWAITING_DECISION',
     'PROPOSAL_EXPIRED',
     'POLICY_VERSION_CHANGED',
     'PROPOSER_NOT_ALLOWED',

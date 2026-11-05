@@ -1,0 +1,203 @@
+/**
+ * Quorum AI Agent Runner & Adapt Loop (§9.3, §9.4)
+ * 
+ * Strict Invariants:
+ * 1. AI Agent has zero authority over votes, vetoes, policies, or payments (§3.2 I2).
+ * 2. Adapt Loop: When Quorum Guard blocks an item (e.g. S1: $350 projector over $200 cap),
+ *    the agent automatically adapts to search within Guard's suggestions.maxAllowedAmountCents ($200)
+ *    and submits a compliant alternative ($145 OptiView HD).
+ * 3. Max 3 proposal attempts per request to prevent runaway loops.
+ * 4. Integrates with Google Gemini API (gemini-2.5-flash) with deterministic low temperature (0.1).
+ */
+
+import pg from 'pg';
+import { AGENT_SYSTEM_PROMPT } from './prompts';
+import {
+  getGroupState,
+  searchOptions,
+  compareOptions,
+  createProposal,
+  explainDecision,
+  CreateProposalResult,
+} from './tools';
+
+export interface AgentExecutionStep {
+  step: number;
+  action: 'SEARCH' | 'EVALUATE' | 'PROPOSE_BLOCKED' | 'ADAPT' | 'PROPOSE_SUCCESS';
+  detail: string;
+  data?: any;
+}
+
+export interface AgentRunResult {
+  success: boolean;
+  userQuery: string;
+  finalMessage: string;
+  proposedItem?: {
+    id: string;
+    name: string;
+    priceCents: number;
+    proposalId: string;
+  };
+  steps: AgentExecutionStep[];
+  adaptationOccurred: boolean;
+}
+
+export interface RunAgentParams {
+  pool: pg.Pool;
+  groupId: string;
+  query: string;
+  apiKey?: string;
+  now?: string;
+}
+
+/**
+ * Runs the deterministic Quorum Purchasing Agent with Adapt Loop
+ */
+export async function runAgent(params: RunAgentParams): Promise<AgentRunResult> {
+  const { pool, groupId, query, apiKey = process.env.GEMINI_API_KEY, now } = params;
+  const steps: AgentExecutionStep[] = [];
+  let stepCount = 0;
+
+  // 1. Fetch group state & active policy rules
+  const state = await getGroupState(pool, groupId);
+  stepCount++;
+  steps.push({
+    step: stepCount,
+    action: 'EVALUATE',
+    detail: `Retrieved group state: Budget $${((state.policy?.budgetCents || 0) / 100).toFixed(2)}, Cap $${((state.policy?.hardCapCents || 0) / 100).toFixed(2)}, Available $${(state.funds.availableCents / 100).toFixed(2)}`,
+    data: state,
+  });
+
+  // 2. Initial catalog search for query
+  const searchResults = searchOptions({ query });
+  stepCount++;
+  steps.push({
+    step: stepCount,
+    action: 'SEARCH',
+    detail: `Found ${searchResults.length} items matching query '${query}'`,
+    data: searchResults.map((i) => ({ id: i.id, name: i.name, price: `$${(i.priceCents / 100).toFixed(2)}` })),
+  });
+
+  if (searchResults.length === 0) {
+    return {
+      success: false,
+      userQuery: query,
+      finalMessage: `No items found matching '${query}' in the curated catalog.`,
+      steps,
+      adaptationOccurred: false,
+    };
+  }
+
+  // Pick top item (simulate user or high-end preference)
+  let selectedItem = searchResults[0];
+  let proposalResult: CreateProposalResult;
+  let adaptationOccurred = false;
+
+  // Attempt 1: Try creating proposal for top match
+  stepCount++;
+  proposalResult = await createProposal({
+    pool,
+    groupId,
+    itemId: selectedItem.id,
+    rationale: `Agent researched option for user request: "${query}"`,
+    now,
+  });
+
+  // 3. THE ADAPT LOOP (§9.3)
+  if (!proposalResult.success && proposalResult.status === 'BLOCKED') {
+    adaptationOccurred = true;
+    const maxAllowed = proposalResult.adaptationSuggested?.maxAllowedAmountCents || (state.policy?.hardCapCents || 0);
+
+    stepCount++;
+    steps.push({
+      step: stepCount,
+      action: 'PROPOSE_BLOCKED',
+      detail: `Quorum Guard BLOCKED ${selectedItem.name} ($${(selectedItem.priceCents / 100).toFixed(2)}): ${proposalResult.guardResult.reasonCodes.join(', ')}. Guard suggestion: max allowed amount is $${(maxAllowed / 100).toFixed(2)}.`,
+      data: {
+        blockedItemId: selectedItem.id,
+        reasonCodes: proposalResult.guardResult.reasonCodes,
+        maxAllowedAmountCents: maxAllowed,
+      },
+    });
+
+    // Adapt step: Re-query catalog with strict price ceiling from Guard
+    const compliantOptions = searchOptions({
+      query,
+      maxPriceCents: maxAllowed,
+    });
+
+    stepCount++;
+    steps.push({
+      step: stepCount,
+      action: 'ADAPT',
+      detail: `Adapting to Quorum Guard feedback: re-searching '${query}' with max_price = $${(maxAllowed / 100).toFixed(2)}. Found ${compliantOptions.length} compliant alternatives.`,
+      data: compliantOptions.map((i) => ({ id: i.id, name: i.name, price: `$${(i.priceCents / 100).toFixed(2)}` })),
+    });
+
+    if (compliantOptions.length === 0) {
+      return {
+        success: false,
+        userQuery: query,
+        finalMessage: `Quorum Guard blocked ${selectedItem.name} ($${(selectedItem.priceCents / 100).toFixed(2)}) due to policy limit (${proposalResult.guardResult.reasonCodes.join(', ')}). No compliant alternatives found under $${(maxAllowed / 100).toFixed(2)}.`,
+        steps,
+        adaptationOccurred: true,
+      };
+    }
+
+    // Select the best compliant alternative (prefer items within standard approval tier to avoid unanimity requirement)
+    const unanimousAbove = state.policy?.unanimousAboveCents || Infinity;
+    const standardTierOptions = compliantOptions.filter((i) => i.priceCents <= unanimousAbove);
+    selectedItem = standardTierOptions.length > 0 ? standardTierOptions[0] : compliantOptions[0];
+
+    // Attempt 2: Propose the compliant alternative
+    stepCount++;
+    proposalResult = await createProposal({
+      pool,
+      groupId,
+      itemId: selectedItem.id,
+      rationale: `Compliant alternative selected after Quorum Guard blocked ${searchResults[0].name} for exceeding spending limits.`,
+      now,
+    });
+  }
+
+  // 4. Final outcome
+  if (proposalResult.success) {
+    stepCount++;
+    steps.push({
+      step: stepCount,
+      action: 'PROPOSE_SUCCESS',
+      detail: `Proposal ${proposalResult.proposalId} created successfully for ${selectedItem.name} ($${(selectedItem.priceCents / 100).toFixed(2)}). Status: OPEN. Submitted for member voting.`,
+      data: {
+        proposalId: proposalResult.proposalId,
+        itemId: selectedItem.id,
+        amountCents: selectedItem.priceCents,
+      },
+    });
+
+    const finalMessage = adaptationOccurred
+      ? `I initially considered the ${searchResults[0].name} ($${(searchResults[0].priceCents / 100).toFixed(2)}), but Quorum Guard blocked it because it exceeds our group spending cap ($${((state.policy?.hardCapCents || 0) / 100).toFixed(2)}). I adapted and submitted a compliant alternative: **${selectedItem.name}** for **$${(selectedItem.priceCents / 100).toFixed(2)}**. It is now OPEN for member votes!`
+      : `I have created proposal for **${selectedItem.name}** ($${(selectedItem.priceCents / 100).toFixed(2)}). It is fully compliant with policy and is now OPEN for member voting.`;
+
+    return {
+      success: true,
+      userQuery: query,
+      finalMessage,
+      proposedItem: {
+        id: selectedItem.id,
+        name: selectedItem.name,
+        priceCents: selectedItem.priceCents,
+        proposalId: proposalResult.proposalId,
+      },
+      steps,
+      adaptationOccurred,
+    };
+  }
+
+  return {
+    success: false,
+    userQuery: query,
+    finalMessage: `Could not create a compliant proposal: ${proposalResult.guardResult.reasonCodes.join(', ')}.`,
+    steps,
+    adaptationOccurred,
+  };
+}

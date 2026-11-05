@@ -29,7 +29,7 @@ export function getPool(): pg.Pool {
 
   globalPool = new Pool({
     connectionString,
-    ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : undefined,
+    ssl: connectionString.includes('localhost') ? undefined : { rejectUnauthorized: false },
     max: 10,
     idleTimeoutMillis: 30000,
     connectionTimeoutMillis: 5000,

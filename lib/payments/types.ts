@@ -19,6 +19,32 @@ export type PaymentStatus =
 
 export type PaymentKind = 'PAYOUT' | 'CHECKOUT' | 'REFUND';
 
+export class DefinitePaymentFailure extends Error {
+  public readonly code: string;
+  public readonly rawResponse?: any;
+
+  constructor(message: string, code: string = 'DEFINITE_PAYMENT_FAILURE', rawResponse?: any) {
+    super(message);
+    this.name = 'DefinitePaymentFailure';
+    this.code = code;
+    this.rawResponse = rawResponse;
+    Object.setPrototypeOf(this, DefinitePaymentFailure.prototype);
+  }
+}
+
+export class AmbiguousPaymentFailure extends Error {
+  public readonly code: string;
+  public readonly rawResponse?: any;
+
+  constructor(message: string, code: string = 'AMBIGUOUS_PAYMENT_FAILURE', rawResponse?: any) {
+    super(message);
+    this.name = 'AmbiguousPaymentFailure';
+    this.code = code;
+    this.rawResponse = rawResponse;
+    Object.setPrototypeOf(this, AmbiguousPaymentFailure.prototype);
+  }
+}
+
 export interface PaymentRecord {
   id: string;
   group_id: string;
@@ -46,7 +72,7 @@ export interface PaymentExecutionParams {
 }
 
 export interface PaymentExecutionOutcome {
-  status: 'PENDING' | 'SUCCEEDED' | 'FAILED';
+  status: 'PENDING' | 'SUCCEEDED' | 'FAILED' | 'UNCLAIMED';
   batchId: string;
   itemId?: string;
   rawResponse: any;
@@ -59,7 +85,12 @@ export interface VendorPaymentAdapter {
 
 export interface ExecutionTransactionResult {
   success: boolean;
-  phase: 'GUARD_BLOCKED' | 'PAYMENT_SUBMITTED' | 'PAYMENT_SUCCEEDED' | 'PAYMENT_FAILED';
+  phase:
+    | 'GUARD_BLOCKED'
+    | 'PAYMENT_SUBMITTED'
+    | 'PAYMENT_SUCCEEDED'
+    | 'PAYMENT_FAILED'
+    | 'PAYMENT_PENDING_RECOVERY';
   paymentId?: string;
   senderBatchId?: string;
   paypalBatchId?: string;

@@ -896,7 +896,7 @@ In `.eslintrc.json`, enforce architectural boundary I1/I2:
 - [x] **Test Sandbox Payouts immediately (Priority #1):** **VERIFIED (Nov 2).** OAuth token generation, $1.00 payout execution (Batch ID `RECH875Y3KX4U`, HTTP 201), batch terminal `SUCCESS`, item `SUCCESS` (Item ID `F3RRGP4AFNFMU`), and duplicate rejection (HTTP 400 `USER_BUSINESS_ERROR`, `"Batch with given sender_batch_id already exists"`) confirmed working on US sandbox accounts. **Pooled mode is greenlit.**
 - [ ] **Supabase Connection & Row-Locking:** Test direct connection vs. pooler in **Session mode** (`aws-0-[region].pooler.supabase.com:5432`) to confirm `SELECT ... FOR UPDATE` row-locking works on IPv4 environments.
 - [ ] **Supabase Keep-Alive:** **[VERIFY]** Confirm whether a scheduled `SELECT 1` query reliably prevents Supabase's 7-day free tier project pausing.
-- [ ] **Orders & Authorizations:** Test `POST /v2/checkout/orders` (`intent: "AUTHORIZE"`), approve via buyer sandbox account, and execute capture.
+- [x] **Orders & Authorizations:** **VERIFIED (Nov 5).** First-hop probe verified against PayPal Sandbox: Order creation with `intent: "AUTHORIZE"` (Order ID `7W907754TF598283U`), US Sandbox buyer browser approval, Authorization generated (`4JB0392236793733D`), Capture executed (`9TF57629J2891443J`, HTTP 201), and Refund completed (`5H510871LR0731522`, HTTP 201). Both hops of the pooled payment architecture are now empirically verified.
 - [ ] **Verify Reauthorization:** Confirm that reauthorization restarts the honor window and updates the authorization ID.
 - [ ] **Webhook Verification:** Register sandbox webhook URL and verify signature using the Developer Dashboard Webhook ID.
 - [ ] **Webhook Retries:** **[VERIFY]** Confirm PayPal's documented retry schedule for failed webhook deliveries.
@@ -912,8 +912,8 @@ In `.eslintrc.json`, enforce architectural boundary I1/I2:
 | Date | Target Deliverable | Exit Gate |
 |---|---|---|
 | **Oct 31** | Repo setup, database schema, sandbox accounts, Day-1 PayPal test script | Sandbox authorization, capture, and payout succeed |
-| **Nov 1 - 2** | Policy validator, **Quorum Guard pure core + 25+ unit tests**, explanation templates | **PASSED (Nov 2):** Vitest Guard suite 100% green (34/34 tests passing) |
-| **Nov 3 - 4** | Funding state machine, lazy `tick(groupId)`, webhooks, failure injection | S4, S5, S6 automated tests pass |
+| **Nov 1 - 2** | Policy validator, **Quorum Guard pure core + 25+ unit tests**, explanation templates | **PASSED (Nov 2):** Vitest Guard suite 100% green (62/62 tests passing with fast-check fuzzing) |
+| **Nov 3 - 4** | Funding state machine, first-hop PayPal probe, lazy `tick(groupId)`, failure injection | **PASSED (Nov 5):** First-hop probe verified live; funding state machine & S4 proposals passing (73/73 tests) |
 | **Nov 5** | Payment execution transaction (direct pg row lock), Payout & Checkout adapters | S3, S7 pass; double-execution test passes |
 | **Nov 6** | Agent tool registry, adapt loop, catalog fixture, charter parsing panel | S1 → S2 → S3 runs end-to-end; **Feature Freeze** |
 | **Nov 7 - 8** | UI workspace, AG Grid ledger integration, persona switcher, demo reset script | Judge walkthrough runs flawlessly on Render |

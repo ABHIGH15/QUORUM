@@ -56,6 +56,8 @@ if (!CLIENT_ID || !CLIENT_SECRET) {
 const args = process.argv.slice(2);
 const IS_VOID_TEST = args.includes('--void');
 const IS_MOCK_FAILURE_TEST = args.includes('--mock-failure');
+const orderIdArgIndex = args.indexOf('--order-id');
+const RESUME_ORDER_ID = orderIdArgIndex !== -1 ? args[orderIdArgIndex + 1] : null;
 
 async function getOAuthToken() {
   console.log('\n--- Step 1: Getting OAuth2 Sandbox Token ---');
@@ -135,19 +137,30 @@ async function createAuthorizationOrder(token, contributionId, amountCents = 100
 }
 
 async function checkOrderStatus(token, orderId) {
-  const res = await fetch(`${PAYPAL_BASE}/v2/checkout/orders/${orderId}`, {
-    method: 'GET',
-    headers: {
-      'Authorization': `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    },
-  });
-  if (!res.ok) return null;
-  const body = await res.json();
-  return body.status;
+  try {
+    const res = await fetch(`${PAYPAL_BASE}/v2/checkout/orders/${orderId}`, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+    });
+    if (!res.ok) return null;
+    const body = await res.json();
+    return body.status;
+  } catch (err) {
+    // Gracefully handle transient network blips / DNS timeouts
+    return null;
+  }
 }
 
 async function waitForBuyerApproval(token, orderId, approveUrl) {
+  const currentStatus = await checkOrderStatus(token, orderId);
+  if (currentStatus === 'APPROVED') {
+    console.log(`\n✅ Order ${orderId} is ALREADY APPROVED! Skipping browser wait.`);
+    return;
+  }
+
   console.log('\n=============================================================');
   console.log('👉 ACTION REQUIRED: APPROVE ORDER IN BROWSER');
   console.log('=============================================================');
@@ -169,8 +182,8 @@ async function waitForBuyerApproval(token, orderId, approveUrl) {
     });
   });
 
-  // Polling loop (every 3 seconds for up to 5 minutes)
-  const maxAttempts = 100;
+  // Polling loop (every 3 seconds for up to 10 minutes)
+  const maxAttempts = 200;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     process.stdout.write(`\r⏳ Polling order status (attempt ${attempt}/${maxAttempts})... `);
     const status = await checkOrderStatus(token, orderId);
@@ -191,9 +204,12 @@ async function waitForBuyerApproval(token, orderId, approveUrl) {
     if (checkNow === 'APPROVED') {
       console.log(`\n\n✅ Order is APPROVED by buyer!`);
       approved = true;
+      rl.close();
       break;
     }
   }
+
+  rl.close();
 
   if (!approved) {
     console.error('\n❌ Timed out waiting for buyer approval.');
@@ -362,8 +378,19 @@ async function run() {
   const testRunId = Date.now().toString(36);
   const contributionId = `c_probe_${testRunId}`;
 
-  // 1. Create order
-  const { orderId, approveUrl } = await createAuthorizationOrder(token, contributionId, 100);
+  let orderId = RESUME_ORDER_ID;
+  let approveUrl = RESUME_ORDER_ID
+    ? `https://www.sandbox.paypal.com/checkoutnow?token=${RESUME_ORDER_ID}`
+    : null;
+
+  if (RESUME_ORDER_ID) {
+    console.log(`\n• Resuming with existing Order ID: ${RESUME_ORDER_ID}`);
+  } else {
+    // 1. Create order
+    const created = await createAuthorizationOrder(token, contributionId, 100);
+    orderId = created.orderId;
+    approveUrl = created.approveUrl;
+  }
 
   // 2. Wait for buyer approval in browser
   await waitForBuyerApproval(token, orderId, approveUrl);
@@ -419,6 +446,7 @@ async function run() {
   console.log('  4. Authorization captured (Capture ID generated)');
   console.log('  5. Capture refunded (Refund ID generated)');
   console.log('=============================================================');
+  process.exit(0);
 }
 
 run().catch((err) => {

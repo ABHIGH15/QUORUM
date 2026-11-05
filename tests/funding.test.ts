@@ -31,6 +31,7 @@ import {
   isAuthorizationExpired,
   shouldRetryCapture,
   createPartialFailureProposals,
+  tickGroup,
 } from '../lib/funding';
 import { evaluate } from '../lib/guard';
 import { Policy } from '../lib/guard/types';
@@ -337,5 +338,125 @@ describe('Funding - S4 Partial Failure Proposals & Quorum Guard Integration', ()
     expect(guardResult.reasonCodes).not.toContain('GROUP_NOT_ACTIVE');
     expect(guardResult.reasonCodes).not.toContain('ROUND_NOT_AWAITING_DECISION');
     expect(guardResult.reasonCodes).not.toContain('FUNDING_NOT_READY');
+  });
+});
+
+describe('Funding - Lazy State Synchronization: tickGroup(input)', () => {
+  it('closes expired veto window and transitions proposal to EXECUTABLE', () => {
+    const tickResult = tickGroup({
+      groupId: 'grp_test',
+      now: '2026-11-02T12:05:00.000Z',
+      policy: baseGuardPolicy,
+      group: { id: 'grp_test', mode: 'POOLED', status: 'ACTIVE' },
+      funds: { availableCents: 48000, reservedCents: 0, fundingReady: true },
+      proposals: [
+        {
+          id: 'prop_ready',
+          group_id: 'grp_test',
+          type: 'PURCHASE',
+          status: 'VETO_WINDOW',
+          created_by_kind: 'AGENT',
+          policy_version: 1,
+          payload: {},
+          veto_ends_at: '2026-11-02T12:02:00.000Z',
+        },
+      ],
+    });
+
+    expect(tickResult.proposalTransitions).toHaveLength(1);
+    expect(tickResult.proposalTransitions[0].toStatus).toBe('EXECUTABLE');
+    expect(tickResult.proposalTransitions[0].proposalId).toBe('prop_ready');
+  });
+
+  it('marks proposal as EXPIRED when voting deadline has elapsed', () => {
+    const tickResult = tickGroup({
+      groupId: 'grp_test',
+      now: '2026-11-05T12:05:00.000Z',
+      policy: baseGuardPolicy,
+      group: { id: 'grp_test', mode: 'POOLED', status: 'ACTIVE' },
+      funds: { availableCents: 48000, reservedCents: 0, fundingReady: true },
+      proposals: [
+        {
+          id: 'prop_stale',
+          group_id: 'grp_test',
+          type: 'PURCHASE',
+          status: 'OPEN',
+          created_by_kind: 'MEMBER',
+          policy_version: 1,
+          payload: {},
+          voting_deadline: '2026-11-05T12:00:00.000Z',
+        },
+      ],
+    });
+
+    expect(tickResult.proposalTransitions).toHaveLength(1);
+    expect(tickResult.proposalTransitions[0].toStatus).toBe('EXPIRED');
+  });
+
+  it('schedules retry for failed capture when next_retry_at has arrived', () => {
+    const round = createMockRound({ status: 'CAPTURING' });
+    const contributions: Contribution[] = [
+      {
+        id: 'c_failed_1',
+        round_id: round.id,
+        member_id: 'm_farid',
+        amount_cents: 8000,
+        status: 'CAPTURE_FAILED',
+        capture_attempts: 1,
+        next_retry_at: '2026-11-02T12:04:00.000Z',
+      },
+    ];
+
+    const tickResult = tickGroup({
+      groupId: round.group_id,
+      now: '2026-11-02T12:05:00.000Z',
+      policy: baseGuardPolicy,
+      group: { id: round.group_id, mode: 'POOLED', status: 'FUNDING' },
+      fundingRound: round,
+      contributions,
+      funds: { availableCents: 0, reservedCents: 0, fundingReady: false },
+      proposals: [],
+    });
+
+    expect(tickResult.contributionRetries).toHaveLength(1);
+    expect(tickResult.contributionRetries[0].contributionId).toBe('c_failed_1');
+    expect(tickResult.contributionRetries[0].attempt).toBe(2);
+  });
+
+  it('triggers PARTIAL_FAILURE and requests S4 proposal generation when retries exhausted', () => {
+    const round = createMockRound({ status: 'CAPTURING', min_contributors: 6 });
+    const members = ['m_asha', 'm_ben', 'm_chloe', 'm_dev', 'm_elena'];
+    const contributions: Contribution[] = [
+      ...members.map((id) => ({
+        id: `c_${id}`,
+        round_id: round.id,
+        member_id: id,
+        amount_cents: 8000,
+        status: 'CAPTURED' as const,
+        capture_attempts: 1,
+      })),
+      {
+        id: 'c_farid',
+        round_id: round.id,
+        member_id: 'm_farid',
+        amount_cents: 8000,
+        status: 'CAPTURE_FAILED',
+        capture_attempts: 3, // Max 3 reached
+      },
+    ];
+
+    const tickResult = tickGroup({
+      groupId: round.group_id,
+      now: '2026-11-02T12:05:00.000Z',
+      policy: baseGuardPolicy,
+      group: { id: round.group_id, mode: 'POOLED', status: 'FUNDING' },
+      fundingRound: round,
+      contributions,
+      funds: { availableCents: 40000, reservedCents: 0, fundingReady: false },
+      proposals: [],
+    });
+
+    expect(tickResult.roundTransition?.toStatus).toBe('PARTIAL_FAILURE');
+    expect(tickResult.generateS4Proposals).toBe(true);
   });
 });

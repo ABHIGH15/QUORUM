@@ -127,11 +127,26 @@ export async function POST(request: Request) {
       );
     }
 
-    // 7. Seed Vendors
+    // 7. Seed Vendors (reads from env vars to route real payouts to PayPal Sandbox personal accounts)
+    const vendorProjectorEmail =
+      process.env.PAYPAL_VENDOR_PROJECTOR_EMAIL ||
+      process.env.PAYPAL_RECIPIENT_EMAIL ||
+      'vendor-projector@sandbox.quorum.app';
+
+    const vendorScreenEmail =
+      process.env.PAYPAL_VENDOR_SCREEN_EMAIL ||
+      process.env.PAYPAL_RECIPIENT_EMAIL ||
+      'vendor-screen@sandbox.quorum.app';
+
+    const vendorAudioEmail =
+      process.env.PAYPAL_VENDOR_AUDIO_EMAIL ||
+      process.env.PAYPAL_RECIPIENT_EMAIL ||
+      'vendor-audio@sandbox.quorum.app';
+
     const vendors = [
-      { id: 'v_projector_shop', name: 'Projector Shop', email: process.env.PAYPAL_RECIPIENT_EMAIL || 'vendor-projector@sandbox.quorum.app', category: 'equipment' },
-      { id: 'v_screen_co', name: 'OptiScreen Direct', email: 'vendor-screen@sandbox.quorum.app', category: 'equipment' },
-      { id: 'v_audio_direct', name: 'Audio Sound Direct', email: 'vendor-audio@sandbox.quorum.app', category: 'equipment' },
+      { id: 'v_projector_shop', name: 'Projector Shop', email: vendorProjectorEmail, category: 'equipment' },
+      { id: 'v_screen_co', name: 'OptiScreen Direct', email: vendorScreenEmail, category: 'equipment' },
+      { id: 'v_audio_direct', name: 'Audio Sound Direct', email: vendorAudioEmail, category: 'equipment' },
     ];
     for (const v of vendors) {
       await pool.query(

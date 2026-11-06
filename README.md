@@ -75,23 +75,31 @@ Quorum operates primarily in **Pooled Mode**, where member contributions are col
 
 > **Important Note for Evaluators:**  
 > In production, member identity is authenticated via cryptographic web sessions or OAuth. For the hackathon evaluation workspace, a demo persona switcher allows judges to experience different member perspectives (e.g., Chair Asha, Member Ben, Member Chloe).  
-> The API extracts member identity from the `quorum_member_id` session cookie or `x-quorum-member-id` header. On every vote and payment execution, the backend strictly verifies that the persona is an active contributing member with captured funds in the database.
+> The API extracts member identity strictly from the `quorum_member_id` session cookie or `x-quorum-member-id` header. On every vote and payment execution, the backend strictly verifies that the persona is an active contributing member with captured funds in the database. (Request body member ID fallback is strictly gated to automated test suites and disabled in production).  
+> The seeded $480 pool represents a simulated initial contributions ledger ($80 × 6 members); live payouts executed during evaluation draw directly against the PayPal Sandbox business account's balance.
 
 ---
 
 ## 5. Live REST API Endpoints
 
 - `GET /api/health`: Database ping, uptime, and lazy tick evaluation trigger (§8.7).
-- `POST /api/webhooks/paypal`: Ingests and verifies PayPal webhooks with atomic deduplication.
+- `POST /api/webhooks/paypal`: Ingests and verifies PayPal webhooks with atomic deduplication. (Configured with **All Events** in PayPal Developer Dashboard).
 - `POST /api/agent/chat`: Conversational agent interface with automatic Adapt Loop.
 - `POST /api/proposals/[id]/vote`: Records member vote/veto, opens veto window, or halts on veto.
 - `POST /api/proposals/[id]/execute`: Executes PayPal payout inside interactive PostgreSQL row lock.
 - `GET /api/groups/[id]/state`: Returns complete group overview, policy, members, and ledger.
-- `POST /api/demo/reset`: Resets database state and re-seeds $480 active group with 6 contributors (protected by `DEMO_RESET_SECRET`).
+- `POST /api/demo/reset`: Resets database state and re-seeds simulated $480 active group with 6 contributors (protected by `DEMO_RESET_SECRET`).
 
 ---
 
-## 6. Quick Start & Verification
+## 6. Database & Row Level Security (RLS)
+
+- Quorum uses PostgreSQL with transactional row-locking (`SELECT ... FOR UPDATE`).
+- All 14 public tables in `db/schema.sql` have **Row Level Security (RLS) enabled** with zero policies, ensuring PostgREST / Supabase anon keys cannot access or mutate tables. The backend connects via direct session pooler connection string (bypassing RLS as table owner).
+
+---
+
+## 7. Quick Start & Verification
 
 ### Prerequisites
 - Node.js v20+ (Node 24 supported)

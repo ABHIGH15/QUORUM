@@ -193,3 +193,21 @@ create table if not exists agent_runs (
   tool_calls jsonb not null,
   created_at timestamptz not null default now()
 );
+
+-- Row Level Security (RLS)
+-- Enables RLS on all public tables with zero policies so PostgREST / Supabase anon key cannot access data.
+-- Direct PostgreSQL pool connections (table owner) bypass RLS completely.
+alter table users enable row level security;
+alter table groups enable row level security;
+alter table memberships enable row level security;
+alter table policies enable row level security;
+alter table vendors enable row level security;
+alter table funding_rounds enable row level security;
+alter table contributions enable row level security;
+alter table proposals enable row level security;
+alter table votes enable row level security;
+alter table payments enable row level security;
+alter table guard_decisions enable row level security;
+alter table ledger_events enable row level security;
+alter table webhook_events enable row level security;
+alter table agent_runs enable row level security;

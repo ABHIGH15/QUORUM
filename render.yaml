@@ -12,8 +12,6 @@ services:
         value: 20.18.0
       - key: PAYPAL_ENV
         value: sandbox
-      - key: DEMO_MODE
-        value: "true"
       - key: DATABASE_URL
         sync: false
       - key: PAYPAL_CLIENT_ID
@@ -23,6 +21,10 @@ services:
       - key: PAYPAL_WEBHOOK_ID
         sync: false
       - key: GEMINI_API_KEY
+        sync: false
+      - key: PAYPAL_VENDOR_PROJECTOR_EMAIL
+        sync: false
+      - key: PAYPAL_RECIPIENT_EMAIL
         sync: false
       - key: SESSION_SECRET
         generateValue: true

@@ -44,9 +44,13 @@ export function createTestDb(): { db: any; pool: pg.Pool } {
   // 1. CREATE EXTENSION
   // 2. Partial unique index (pg-mem parses index WHERE clause but does not filter rows on evaluation,
   //    turning it into an unconditional unique index). Verified on real PostgreSQL via test-real-postgres.mjs.
+  // 3. ALTER TABLE ... ENABLE ROW LEVEL SECURITY (Postgres RLS is Supabase/PostgREST specific; pg-mem syntax parser throws on "row").
   let cleanedSql = schemaSql
     .split('\n')
-    .filter((line) => !line.toLowerCase().includes('create extension'))
+    .filter((line) => {
+      const lower = line.toLowerCase();
+      return !lower.includes('create extension') && !lower.includes('enable row level security');
+    })
     .join('\n')
     .replace(/create unique index if not exists one_live_payment_per_proposal[^;]+;/gi, '');
 

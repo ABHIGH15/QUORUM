@@ -112,6 +112,11 @@ export default function HomePage() {
             </a>
           </div>
         </div>
+
+        <div className="mt-4 pt-3 border-t border-slate-800 flex flex-wrap items-center justify-between text-xs text-slate-400 gap-2">
+          <span>Demo Pool: <strong className="text-slate-200">$480.00</strong> (Simulated initial contribution ledger: 6 members &times; $80.00)</span>
+          <span className="text-slate-400">Live payouts draw directly on PayPal Sandbox business balance</span>
+        </div>
       </div>
 
       {/* Core Architectural Promise */}
@@ -208,7 +213,7 @@ export default function HomePage() {
           <div className="flex items-center gap-2">
             <span className="px-2 py-0.5 rounded bg-amber-600 text-white font-semibold text-[10px]">POST</span>
             <span className="font-semibold text-slate-900">/api/demo/reset</span>
-            <span className="text-slate-500 font-sans">&mdash; Protected administrative seed for demo group ($480 Sandbox balance)</span>
+            <span className="text-slate-500 font-sans">&mdash; Protected administrative seed for demo group (simulated $480 initial contribution ledger)</span>
           </div>
         </div>
       </div>

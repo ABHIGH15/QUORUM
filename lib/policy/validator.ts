@@ -146,3 +146,106 @@ export function validatePolicy(policy: Policy, knownVendors?: Vendor[]): PolicyV
     errors,
   };
 }
+
+export interface ParsedCharterResult {
+  success: boolean;
+  policy?: Policy;
+  validationErrors?: string[];
+  rawText: string;
+}
+
+/**
+ * Extracts structured policy parameters from informal English charter text (§9.1 Tool 2)
+ * Validates against PolicySchema & 9 deterministic rules before returning.
+ */
+export function parseCharterToPolicy(charterText: string): ParsedCharterResult {
+  // Regex heuristics to extract core governance parameters from informal charter text
+  // 1. Members count
+  const memberMatch = charterText.match(/(\d+)\s*(?:members?|people|contributors?)/i);
+  const minContributors = memberMatch ? parseInt(memberMatch[1], 10) : 6;
+
+  // 2. Per-member contribution
+  const perMemberMatch = charterText.match(/\$(\d+(?:\.\d{2})?)\s*(?:each|per\s*member|contribution)/i);
+  const perMemberCents = perMemberMatch ? Math.round(parseFloat(perMemberMatch[1]) * 100) : 8000;
+
+  // 3. Total budget
+  const budgetMatch = charterText.match(/(?:budget|total|pool)\s*(?:of|is)?\s*\$(\d+(?:\.\d{2})?)/i);
+  const budgetCents = budgetMatch
+    ? Math.round(parseFloat(budgetMatch[1]) * 100)
+    : perMemberCents * minContributors;
+
+  // 4. Hard cap
+  const hardCapMatch = charterText.match(
+    /(?:hard\s*cap|max(?:imum)?\s*purchase|no\s*single\s*purchase\s*above|cap(?:ped\s*at)?)\s*\$(\d+(?:\.\d{2})?)/i
+  );
+  const hardCapCents = hardCapMatch ? Math.round(parseFloat(hardCapMatch[1]) * 100) : 20000;
+
+  // 5. Unanimous threshold
+  const unanimousMatch = charterText.match(
+    /(?:unanimous\s*(?:above|over)?|unanimity\s*(?:above|over)?)\s*\$(\d+(?:\.\d{2})?)/i
+  );
+  const unanimousAboveCents = unanimousMatch ? Math.round(parseFloat(unanimousMatch[1]) * 100) : 15000;
+
+  // 6. Veto window
+  const vetoHourMatch = charterText.match(/(\d+)\s*(?:hour|hr)s?\s*veto/i);
+  const vetoMinMatch = charterText.match(/(\d+)\s*(?:minute|min)s?\s*veto/i);
+  let vetoWindowMinutes = 1440; // 24 hours default
+  if (vetoHourMatch) {
+    vetoWindowMinutes = parseInt(vetoHourMatch[1], 10) * 60;
+  } else if (vetoMinMatch) {
+    vetoWindowMinutes = parseInt(vetoMinMatch[1], 10);
+  }
+
+  // 7. Categories
+  const catMatches: string[] = [];
+  const knownCategories = ['Electronics', 'Entertainment', 'Office', 'Supplies', 'Food', 'Travel'];
+  for (const cat of knownCategories) {
+    if (new RegExp(`\\b${cat}\\b`, 'i').test(charterText)) {
+      catMatches.push(cat);
+    }
+  }
+  const categoriesAllowed = catMatches.length > 0 ? catMatches : ['Electronics', 'Entertainment', 'Office'];
+
+  // 8. Approval Tiers (sorted ascending, highest equals hard cap)
+  const approvalTiers = [
+    { max_cents: 6000, votes_required: 2 },
+    { max_cents: 15000, votes_required: 4 },
+    { max_cents: hardCapCents, votes_required: minContributors },
+  ];
+
+  const candidatePolicy: Policy = {
+    version: 1,
+    currency: 'USD',
+    budget_cents: budgetCents,
+    hard_cap_cents: hardCapCents,
+    unanimous_above_cents: unanimousAboveCents,
+    approval_tiers: approvalTiers,
+    veto_window_minutes: vetoWindowMinutes,
+    proposal_expiry_hours: 72,
+    vendors: {
+      mode: 'OPEN',
+      allowlist_vendor_ids: ['v_projector_shop', 'v_screen_co', 'v_audio_direct'],
+    },
+    categories_allowed: categoriesAllowed,
+    funding: {
+      per_member_cents: perMemberCents,
+      min_contributors: minContributors,
+      authorization_window_hours: 48,
+      capture_retry_attempts: 2,
+      capture_retry_interval_minutes: 60,
+      partial_failure_decision: 'GROUP_VOTE',
+      partial_failure_default: 'UNWIND',
+      reduced_budget_votes_required: 'MAJORITY_OF_CONTRIBUTORS',
+    },
+    amendment_votes_required: minContributors,
+  };
+
+  const validation = validatePolicy(candidatePolicy);
+
+  return {
+    success: validation.valid,
+    policy: candidatePolicy,
+    validationErrors: validation.errors,
+    rawText: charterText,
+  };
+}

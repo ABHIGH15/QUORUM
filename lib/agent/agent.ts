@@ -20,6 +20,7 @@ import {
   explainDecision,
   CreateProposalResult,
 } from './tools';
+import { runGeminiAgent, GEMINI_MODEL } from './gemini';
 
 export interface AgentExecutionStep {
   step: number;
@@ -48,13 +49,33 @@ export interface RunAgentParams {
   query: string;
   apiKey?: string;
   now?: string;
+  forceDeterministic?: boolean; // Force deterministic loop for fast unit testing
 }
 
 /**
- * Runs the deterministic Quorum Purchasing Agent with Adapt Loop
+ * Runs the Quorum Purchasing Agent with Adapt Loop.
+ * Uses real Gemini 3.8 Flash tool-calling when apiKey is present.
+ * Seamlessly falls back to deterministic adapt loop if offline or testing.
  */
 export async function runAgent(params: RunAgentParams): Promise<AgentRunResult> {
-  const { pool, groupId, query, apiKey = process.env.GEMINI_API_KEY, now } = params;
+  const { pool, groupId, query, apiKey = process.env.GEMINI_API_KEY, now, forceDeterministic = false } = params;
+
+  // If apiKey is present and not explicitly forced deterministic, run real Gemini tool calling
+  if (apiKey && !forceDeterministic) {
+    try {
+      return await runGeminiAgent({
+        pool,
+        groupId,
+        query,
+        apiKey,
+        now,
+      });
+    } catch (err: any) {
+      console.warn(`[Quorum Agent] Gemini LLM call failed or unavailable: ${err.message}. Falling back to deterministic adapt loop.`);
+    }
+  }
+
+  // Deterministic Adapt Loop (Used when offline, in unit tests, or as safety fallback)
   const steps: AgentExecutionStep[] = [];
   let stepCount = 0;
 

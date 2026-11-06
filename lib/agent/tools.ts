@@ -143,9 +143,24 @@ export function searchOptions(params: {
 
   if (query) {
     const q = query.toLowerCase();
-    items = items.filter(
+    let matches = items.filter(
       (item) => item.name.toLowerCase().includes(q) || item.description.toLowerCase().includes(q)
     );
+    // If exact sentence not found, match significant product keywords
+    if (matches.length === 0) {
+      const stopWords = new Set([
+        'i', 'want', 'to', 'buy', 'a', 'an', 'the', 'for', 'our', 'in', 'on',
+        'at', 'we', 'need', 'get', 'purchasing', 'purchase', 'group', 'movie', 'nights', 'night'
+      ]);
+      const words = q.split(/\s+/).map(w => w.replace(/[^a-z0-9]/g, '')).filter((w) => w.length > 2 && !stopWords.has(w));
+      if (words.length > 0) {
+        matches = items.filter((item) => {
+          const itemText = (item.name + ' ' + item.description).toLowerCase();
+          return words.some((word) => itemText.includes(word));
+        });
+      }
+    }
+    items = matches;
   }
 
   if (category) {
@@ -359,11 +374,37 @@ export async function createProposal(params: CreateProposalParams): Promise<Crea
 
   const guardResult = evaluate(guardInput);
 
-  // 9. If Guard BLOCKS proposal in PROPOSAL phase, record decision and return adaptation feedback
+  // 9. If Guard BLOCKS proposal in PROPOSAL phase, record visible BLOCKED proposal & decision audit row
   if (guardResult.decision === 'BLOCKED') {
+    const insertBlockedRes = await pool.query(
+      `INSERT INTO proposals (
+        group_id, type, status, created_by_kind, policy_version,
+        vendor_id, category, amount_cents, payload, voting_deadline
+       ) VALUES (
+        $1, 'PURCHASE', 'BLOCKED', 'AGENT', $2,
+        $3, $4, $5, $6, $7
+       ) RETURNING id`,
+      [
+        groupId,
+        policyVersion,
+        item.vendorId,
+        item.category,
+        item.priceCents,
+        JSON.stringify({ catalog_item_id: item.id, item_name: item.name, rationale }),
+        votingDeadline,
+      ]
+    );
+    const blockedProposalId = insertBlockedRes.rows[0].id;
+
+    await pool.query(
+      `INSERT INTO guard_decisions (proposal_id, phase, policy_version, input_snapshot, result, decision)
+       VALUES ($1, 'PROPOSAL', $2, $3, $4, $5)`,
+      [blockedProposalId, policyVersion, JSON.stringify(guardInput), JSON.stringify(guardResult), guardResult.decision]
+    );
+
     return {
       success: false,
-      proposalId: '',
+      proposalId: blockedProposalId,
       status: 'BLOCKED',
       guardResult,
       adaptationSuggested: {

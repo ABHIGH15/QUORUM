@@ -387,9 +387,8 @@ export async function executeProposalPayment(
       }
 
       // 16. Calculate Attempt Number from historical payments for this proposal
-      // Use COALESCE(proposal_id, null) to ensure table scan across all statuses (including FAILED)
       const countRes = await client.query(
-        `SELECT COUNT(*)::int as count FROM payments WHERE COALESCE(proposal_id, null) = $1`,
+        `SELECT COUNT(*)::int as count FROM payments WHERE proposal_id = $1`,
         [proposalId]
       );
       attemptNumber = (countRes.rows[0]?.count || 0) + 1;
@@ -548,35 +547,17 @@ export async function resumeCreatedPayments(params: {
   const { groupId, pool, adapter, olderThanSeconds = 60 } = params;
   const results: ExecutionTransactionResult[] = [];
 
-  // Claim stuck payments using SELECT ... FOR UPDATE SKIP LOCKED
+  // Claim stuck payments using standard PostgreSQL SELECT ... FOR UPDATE SKIP LOCKED
   const claimedPayments = await withTransaction(pool, async (client) => {
-    let res: any;
-    try {
-      res = await client.query(
-        `SELECT id, proposal_id, amount_cents, sender_batch_id
-         FROM payments
-         WHERE group_id = $1 
-           AND status = 'CREATED'
-           AND updated_at <= NOW() - ($2 || ' seconds')::interval
-         FOR UPDATE SKIP LOCKED`,
-        [groupId, olderThanSeconds]
-      );
-    } catch (err: any) {
-      if (err.message?.includes('skip locked') || err.message?.includes('AST')) {
-        // Fallback for pg-mem in in-memory test environments
-        res = await client.query(
-          `SELECT id, proposal_id, amount_cents, sender_batch_id
-           FROM payments
-           WHERE group_id = $1 
-             AND status = 'CREATED'
-             AND updated_at <= NOW() - ($2 || ' seconds')::interval
-           FOR UPDATE`,
-          [groupId, olderThanSeconds]
-        );
-      } else {
-        throw err;
-      }
-    }
+    const res = await client.query(
+      `SELECT id, proposal_id, amount_cents, sender_batch_id
+       FROM payments
+       WHERE group_id = $1 
+         AND status = 'CREATED'
+         AND updated_at <= NOW() - ($2 || ' seconds')::interval
+       FOR UPDATE SKIP LOCKED`,
+      [groupId, olderThanSeconds]
+    );
 
     // Bump updated_at immediately so concurrent workers skip these rows
     if (res.rows.length > 0) {

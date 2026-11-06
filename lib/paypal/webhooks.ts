@@ -23,7 +23,7 @@ export interface WebhookVerificationParams {
   token: string;
   webhookId: string;
   headers: WebhookHeaders;
-  body: any;
+  body: any; // Raw JSON string or parsed object
 }
 
 export interface WebhookVerificationResult {
@@ -54,6 +54,9 @@ export async function verifyWebhookSignature(
     };
   }
 
+  // Ensure webhook_event is valid object
+  const webhookEvent = typeof body === 'string' ? JSON.parse(body) : body;
+
   const payload = {
     auth_algo: authAlgo,
     cert_url: certUrl,
@@ -61,7 +64,7 @@ export async function verifyWebhookSignature(
     transmission_sig: transmissionSig,
     transmission_time: transmissionTime,
     webhook_id: webhookId,
-    webhook_event: body,
+    webhook_event: webhookEvent,
   };
 
   try {

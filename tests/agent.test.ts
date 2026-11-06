@@ -172,9 +172,17 @@ describe('AI Agent - Curated Catalog, Tools, & Adapt Loop', () => {
 
       expect(result.success).toBe(false);
       expect(result.status).toBe('BLOCKED');
+      expect(result.proposalId).toBeDefined();
+      expect(result.proposalId.length).toBeGreaterThan(0);
       expect(result.guardResult.decision).toBe('BLOCKED');
       expect(result.guardResult.reasonCodes).toContain('HARD_CAP_EXCEEDED');
       expect(result.adaptationSuggested?.maxAllowedAmountCents).toBe(20000); // $200.00 cap
+
+      // Verify the blocked proposal is saved in DB with status BLOCKED and audit row
+      const blockedRow = await pool.query(`SELECT status, amount_cents FROM proposals WHERE id = $1`, [result.proposalId]);
+      expect(blockedRow.rows).toHaveLength(1);
+      expect(blockedRow.rows[0].status).toBe('BLOCKED');
+      expect(blockedRow.rows[0].amount_cents).toBe(35000);
     });
 
     it('Allows compliant $145 projector in PROPOSAL phase, inserts OPEN proposal and audit record', async () => {
@@ -211,6 +219,7 @@ describe('AI Agent - Curated Catalog, Tools, & Adapt Loop', () => {
         groupId: testGroupId,
         query: 'projector',
         now: '2026-11-06T12:00:00Z',
+        forceDeterministic: true,
       });
 
       expect(result.success).toBe(true);
@@ -226,12 +235,16 @@ describe('AI Agent - Curated Catalog, Tools, & Adapt Loop', () => {
       expect(actions).toContain('ADAPT');
       expect(actions).toContain('PROPOSE_SUCCESS');
 
-      // Verify final proposal is in DB in OPEN status
-      const propRes = await pool.query(`SELECT status, amount_cents FROM proposals WHERE id = $1`, [
-        result.proposedItem?.proposalId,
-      ]);
-      expect(propRes.rows[0].status).toBe('OPEN');
-      expect(propRes.rows[0].amount_cents).toBe(14500);
+      // Verify BOTH proposals exist in DB: the visible BLOCKED $350 proposal and the final OPEN $145 proposal
+      const allProps = await pool.query(
+        `SELECT id, status, amount_cents FROM proposals WHERE group_id = $1 ORDER BY created_at ASC`,
+        [testGroupId]
+      );
+      expect(allProps.rows).toHaveLength(2);
+      expect(allProps.rows[0].status).toBe('BLOCKED');
+      expect(allProps.rows[0].amount_cents).toBe(35000);
+      expect(allProps.rows[1].status).toBe('OPEN');
+      expect(allProps.rows[1].amount_cents).toBe(14500);
     });
 
     it('Direct Compliant Request: Succeeds directly without adaptation when item is within limits', async () => {
@@ -240,6 +253,7 @@ describe('AI Agent - Curated Catalog, Tools, & Adapt Loop', () => {
         groupId: testGroupId,
         query: 'Boundary Mic', // $59.00
         now: '2026-11-06T12:00:00Z',
+        forceDeterministic: true,
       });
 
       expect(result.success).toBe(true);

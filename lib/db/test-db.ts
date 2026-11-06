@@ -40,15 +40,46 @@ export function createTestDb(): { db: any; pool: pg.Pool } {
   const schemaPath = path.resolve(process.cwd(), 'db/schema.sql');
   const schemaSql = fs.readFileSync(schemaPath, 'utf8');
 
-  // Strip extension lines that pg-mem doesn't need
-  const cleanedSql = schemaSql
+  // Strip extension lines and constructs that pg-mem doesn't support:
+  // 1. CREATE EXTENSION
+  // 2. Partial unique index (pg-mem parses index WHERE clause but does not filter rows on evaluation,
+  //    turning it into an unconditional unique index). Verified on real PostgreSQL via test-real-postgres.mjs.
+  let cleanedSql = schemaSql
     .split('\n')
     .filter((line) => !line.toLowerCase().includes('create extension'))
-    .join('\n');
+    .join('\n')
+    .replace(/create unique index if not exists one_live_payment_per_proposal[^;]+;/gi, '');
 
   db.public.none(cleanedSql);
 
   const pgAdapter = db.adapters.createPg();
   const pool = new pgAdapter.Pool();
+
+  // Helper to sanitize unsupported PostgreSQL extensions in pg-mem (e.g. SKIP LOCKED)
+  function sanitizeQuery(sql: any): any {
+    if (typeof sql === 'string') {
+      return sql.replace(/\bSKIP\s+LOCKED\b/gi, '');
+    }
+    if (sql && typeof sql.text === 'string') {
+      return { ...sql, text: sql.text.replace(/\bSKIP\s+LOCKED\b/gi, '') };
+    }
+    return sql;
+  }
+
+  const origPoolQuery = pool.query.bind(pool);
+  pool.query = function (sql: any, ...args: any[]) {
+    return (origPoolQuery as any)(sanitizeQuery(sql), ...args);
+  };
+
+  const origConnect = pool.connect.bind(pool);
+  pool.connect = async function (...args: any[]) {
+    const client = await (origConnect as any)(...args);
+    const origClientQuery = client.query.bind(client);
+    client.query = function (sql: any, ...qArgs: any[]) {
+      return (origClientQuery as any)(sanitizeQuery(sql), ...qArgs);
+    };
+    return client;
+  };
+
   return { db, pool };
 }

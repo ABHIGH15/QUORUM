@@ -19,6 +19,32 @@ export async function POST(request: Request) {
       return Response.json({ error: 'Unauthorized: Invalid or missing DEMO_RESET_SECRET' }, { status: 401 });
     }
 
+    // Refuse to seed if no real sandbox vendor account is configured (prevents payouts from becoming UNCLAIMED)
+    const isTest = process.env.NODE_ENV === 'test';
+    const defaultRecipient = process.env.PAYPAL_RECIPIENT_EMAIL?.trim();
+    const vendorProjectorEmail =
+      process.env.PAYPAL_VENDOR_PROJECTOR_EMAIL?.trim() ||
+      defaultRecipient ||
+      (isTest ? 'test-vendor-projector@sandbox.quorum.app' : null);
+    const vendorScreenEmail =
+      process.env.PAYPAL_VENDOR_SCREEN_EMAIL?.trim() ||
+      defaultRecipient ||
+      (isTest ? 'test-vendor-screen@sandbox.quorum.app' : null);
+    const vendorAudioEmail =
+      process.env.PAYPAL_VENDOR_AUDIO_EMAIL?.trim() ||
+      defaultRecipient ||
+      (isTest ? 'test-vendor-audio@sandbox.quorum.app' : null);
+
+    if (!vendorProjectorEmail || !vendorScreenEmail || !vendorAudioEmail) {
+      return Response.json(
+        {
+          error:
+            'Missing vendor sandbox accounts. Refusing to seed demo state without valid vendor emails, or payouts will silently become UNCLAIMED. Configure PAYPAL_VENDOR_PROJECTOR_EMAIL, PAYPAL_VENDOR_SCREEN_EMAIL, PAYPAL_VENDOR_AUDIO_EMAIL, or set PAYPAL_RECIPIENT_EMAIL to a PayPal Sandbox Personal Account.',
+        },
+        { status: 400 }
+      );
+    }
+
     const pool = getPool();
 
     // 1. Clear existing demo data
@@ -127,26 +153,11 @@ export async function POST(request: Request) {
       );
     }
 
-    // 7. Seed Vendors (reads from env vars to route real payouts to PayPal Sandbox personal accounts)
-    const vendorProjectorEmail =
-      process.env.PAYPAL_VENDOR_PROJECTOR_EMAIL ||
-      process.env.PAYPAL_RECIPIENT_EMAIL ||
-      'vendor-projector@sandbox.quorum.app';
-
-    const vendorScreenEmail =
-      process.env.PAYPAL_VENDOR_SCREEN_EMAIL ||
-      process.env.PAYPAL_RECIPIENT_EMAIL ||
-      'vendor-screen@sandbox.quorum.app';
-
-    const vendorAudioEmail =
-      process.env.PAYPAL_VENDOR_AUDIO_EMAIL ||
-      process.env.PAYPAL_RECIPIENT_EMAIL ||
-      'vendor-audio@sandbox.quorum.app';
-
+    // 7. Seed Vendors using validated sandbox personal accounts
     const vendors = [
-      { id: 'v_projector_shop', name: 'Projector Shop', email: vendorProjectorEmail, category: 'equipment' },
-      { id: 'v_screen_co', name: 'OptiScreen Direct', email: vendorScreenEmail, category: 'equipment' },
-      { id: 'v_audio_direct', name: 'Audio Sound Direct', email: vendorAudioEmail, category: 'equipment' },
+      { id: 'v_projector_shop', name: 'Projector Shop', email: vendorProjectorEmail!, category: 'equipment' },
+      { id: 'v_screen_co', name: 'OptiScreen Direct', email: vendorScreenEmail!, category: 'equipment' },
+      { id: 'v_audio_direct', name: 'Audio Sound Direct', email: vendorAudioEmail!, category: 'equipment' },
     ];
     for (const v of vendors) {
       await pool.query(

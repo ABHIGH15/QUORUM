@@ -75,6 +75,28 @@ describe('Quorum API Route Handlers', () => {
     expect(stateData.ledger.length).toBeGreaterThanOrEqual(6);
   });
 
+  it('POST /api/demo/reset: Refuses to seed when vendor emails are missing in production/sandbox deployment', async () => {
+    const originalEnv = process.env.NODE_ENV;
+    try {
+      (process.env as any).NODE_ENV = 'production';
+      delete process.env.PAYPAL_VENDOR_PROJECTOR_EMAIL;
+      delete process.env.PAYPAL_VENDOR_SCREEN_EMAIL;
+      delete process.env.PAYPAL_VENDOR_AUDIO_EMAIL;
+      delete process.env.PAYPAL_RECIPIENT_EMAIL;
+
+      const req = new Request('http://localhost/api/demo/reset', {
+        method: 'POST',
+        headers: { 'Authorization': 'Bearer test_secret_123' },
+      });
+      const res = await demoResetHandler(req);
+      expect(res.status).toBe(400);
+      const data = await res.json();
+      expect(data.error).toContain('Missing vendor sandbox accounts');
+    } finally {
+      (process.env as any).NODE_ENV = originalEnv;
+    }
+  });
+
   it('POST /api/agent/chat: Successfully triggers Adapt Loop through API route', async () => {
     // Seed demo group first
     const resetReq = new Request('http://localhost/api/demo/reset', {

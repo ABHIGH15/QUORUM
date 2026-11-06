@@ -25,7 +25,14 @@ import {
 import { CURATED_CATALOG } from './catalog';
 import { AgentExecutionStep, AgentRunResult } from './agent';
 
-export const GEMINI_MODEL = 'gemini-3.8-flash';
+export const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.8-flash';
+
+export class GeminiRateLimitError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'GeminiRateLimitError';
+  }
+}
 
 // Gemini Function Declarations Schema (§9.1)
 export const GEMINI_TOOL_DECLARATIONS = [
@@ -160,6 +167,9 @@ export async function runGeminiAgent(params: GeminiAgentRunParams): Promise<Agen
 
     if (!response.ok) {
       const errText = await response.text();
+      if (response.status === 429 || errText.includes('RESOURCE_EXHAUSTED')) {
+        throw new GeminiRateLimitError(`Gemini free-tier rate limit reached: ${errText}`);
+      }
       throw new Error(`Gemini API error (${response.status}): ${errText}`);
     }
 

@@ -8,11 +8,30 @@ interface RouteContext {
   };
 }
 
+function getMemberIdFromRequest(request: Request, body?: any): string | null {
+  const cookieHeader = request.headers.get('cookie') || '';
+  const cookieMatch = cookieHeader.match(/(?:^|;\s*)quorum_member_id=([^;]+)/);
+  if (cookieMatch) {
+    return decodeURIComponent(cookieMatch[1].trim());
+  }
+  const headerMemberId = request.headers.get('x-quorum-member-id');
+  if (headerMemberId) {
+    return headerMemberId.trim();
+  }
+  if (body && body.executorMemberId) {
+    return body.executorMemberId;
+  }
+  if (body && body.memberId) {
+    return body.memberId;
+  }
+  return null;
+}
+
 /**
  * Proposal Payment Execution Route (§7, §8)
  * 
  * Invariants:
- * 1. Must be triggered by an active contributing member persona (executorMemberId).
+ * 1. Must be triggered by an active contributing member persona (derived from session cookie / header).
  * 2. Runs Quorum Guard inside interactive PostgreSQL row lock (SELECT ... FOR UPDATE).
  * 3. Commits reservation before calling external PayPal API.
  * 4. Strictly idempotent using q_<proposalId>_<attempt> sender_batch_id.
@@ -21,7 +40,7 @@ export async function POST(request: Request, context: RouteContext) {
   try {
     const proposalId = context.params.id;
     const body = await request.json().catch(() => ({}));
-    const executorMemberId = body.executorMemberId || request.headers.get('x-quorum-member-id');
+    const executorMemberId = getMemberIdFromRequest(request, body);
 
     if (!executorMemberId) {
       return Response.json(
@@ -65,7 +84,7 @@ export async function POST(request: Request, context: RouteContext) {
       phase: result.phase,
       paymentId: result.paymentId,
       senderBatchId: result.senderBatchId,
-      adapterStatus: result.adapterStatus,
+      paypalBatchId: result.paypalBatchId,
     });
   } catch (err: any) {
     console.error('[API Proposal Execution Error]', err);

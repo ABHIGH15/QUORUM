@@ -45,12 +45,12 @@ export async function POST(request: Request) {
 
     const event = JSON.parse(rawBody);
     const pool = getPool();
-    const result = await processWebhookEvent(pool, event);
+    const result = await processWebhookEvent({ pool, event, verified: true });
 
     return Response.json({
-      status: result.status,
-      action: result.action,
-      eventId: result.eventId,
+      status: result.duplicate ? 'DUPLICATE' : 'PROCESSED',
+      action: result.actionTaken,
+      eventId: result.paypalEventId,
       eventType: result.eventType,
     });
   } catch (err: any) {

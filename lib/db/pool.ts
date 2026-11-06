@@ -59,8 +59,8 @@ export async function withTransaction<T>(
   let client: pg.PoolClient;
   let shouldRelease = false;
 
-  if ('connect' in poolOrClient && typeof poolOrClient.connect === 'function') {
-    client = await poolOrClient.connect();
+  if ('totalCount' in poolOrClient || !('release' in poolOrClient)) {
+    client = await (poolOrClient as pg.Pool).connect();
     shouldRelease = true;
   } else {
     client = poolOrClient as pg.PoolClient;

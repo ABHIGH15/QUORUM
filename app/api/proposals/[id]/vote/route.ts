@@ -8,26 +8,44 @@ interface RouteContext {
   };
 }
 
+function getMemberIdFromRequest(request: Request, body?: any): string | null {
+  const cookieHeader = request.headers.get('cookie') || '';
+  const cookieMatch = cookieHeader.match(/(?:^|;\s*)quorum_member_id=([^;]+)/);
+  if (cookieMatch) {
+    return decodeURIComponent(cookieMatch[1].trim());
+  }
+  const headerMemberId = request.headers.get('x-quorum-member-id');
+  if (headerMemberId) {
+    return headerMemberId.trim();
+  }
+  if (body && body.memberId) {
+    return body.memberId;
+  }
+  return null;
+}
+
 /**
  * Proposal Voting & Veto Route (§6, §7)
  * 
  * Invariants:
  * 1. Only active captured contributors may vote or veto (I7).
+ *    Derives persona from session cookie `quorum_member_id` or header `x-quorum-member-id`.
  * 2. Veto window: A single veto immediately halts an approved proposal into VETOED (I4).
  * 3. Quorum Guard re-evaluates in VOTING phase after every vote.
- *    When required threshold is satisfied:
- *    - If veto_window_minutes > 0: moves to VETO_WINDOW
- *    - If veto_window_minutes === 0: moves directly to EXECUTABLE
+ *    - When threshold reached: moves to VETO_WINDOW with veto_ends_at set.
+ *    - If votes drop below threshold: reverts to OPEN and clears veto_ends_at.
+ *    - When veto window concludes or 0m: moves to EXECUTABLE.
  */
 export async function POST(request: Request, context: RouteContext) {
   try {
     const proposalId = context.params.id;
-    const body = await request.json();
-    const { memberId, choice } = body;
+    const body = await request.json().catch(() => ({}));
+    const memberId = getMemberIdFromRequest(request, body);
+    const choice = body.choice;
 
     if (!memberId || !['APPROVE', 'REJECT', 'VETO'].includes(choice)) {
       return Response.json(
-        { error: 'Invalid parameters: memberId and choice (APPROVE | REJECT | VETO) are required.' },
+        { error: 'Invalid parameters: eligible memberId (via session cookie / header) and choice (APPROVE | REJECT | VETO) are required.' },
         { status: 400 }
       );
     }
@@ -205,6 +223,16 @@ export async function POST(request: Request, context: RouteContext) {
         `UPDATE proposals SET status = $1, veto_ends_at = $2 WHERE id = $3`,
         [nextStatus, vetoEndsAt, proposalId]
       );
+    } else if (guardResult.decision === 'NEEDS_VOTES') {
+      if (proposal.status === 'VETO_WINDOW') {
+        // Approvals dropped below threshold: revert to OPEN and clear veto_ends_at
+        nextStatus = 'OPEN';
+        vetoEndsAt = null;
+        await pool.query(
+          `UPDATE proposals SET status = $1, veto_ends_at = NULL WHERE id = $2`,
+          [nextStatus, proposalId]
+        );
+      }
     } else if (guardResult.decision === 'APPROVED') {
       nextStatus = 'EXECUTABLE';
       await pool.query(

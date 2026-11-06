@@ -227,7 +227,8 @@ export function compareOptions(
       requiredVotes = policy.totalEligibleVoters;
       notes.push(`Above $${(policy.unanimousAboveCents / 100).toFixed(2)}: requires unanimous consent`);
     } else {
-      const tier = policy.approval_tiers.find((t) => item.priceCents <= t.max_cents);
+      const tiers = policy.approvalTiers || (policy as any).approval_tiers || [];
+      const tier = tiers.find((t: any) => item.priceCents <= t.max_cents);
       if (tier) {
         requiredVotes = tier.votes_required;
       }

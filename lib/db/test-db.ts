@@ -23,7 +23,7 @@ export function createTestDb(): { db: any; pool: pg.Pool } {
   db.public.registerFunction({
     name: 'gen_random_uuid',
     args: [],
-    returns: db.public.getType('text') as any,
+    returns: (db.public as any).getType('text'),
     impure: true,
     implementation: () => crypto.randomUUID(),
   });
@@ -31,7 +31,7 @@ export function createTestDb(): { db: any; pool: pg.Pool } {
   db.public.registerFunction({
     name: 'uuid_generate_v4',
     args: [],
-    returns: db.public.getType('text') as any,
+    returns: (db.public as any).getType('text'),
     impure: true,
     implementation: () => crypto.randomUUID(),
   });

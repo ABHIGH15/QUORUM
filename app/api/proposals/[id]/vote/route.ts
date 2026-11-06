@@ -18,8 +18,11 @@ function getMemberIdFromRequest(request: Request, body?: any): string | null {
   if (headerMemberId) {
     return headerMemberId.trim();
   }
-  if (body && body.memberId) {
-    return body.memberId;
+  // Gated body fallback: strictly for automated test suites and controlled demo mode
+  if (process.env.NODE_ENV === 'test' || process.env.DEMO_MODE === 'true') {
+    if (body && body.memberId) {
+      return body.memberId;
+    }
   }
   return null;
 }

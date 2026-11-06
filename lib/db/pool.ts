@@ -8,6 +8,7 @@
  */
 
 import pg from 'pg';
+import { createTestDb } from './test-db';
 
 const { Pool } = pg;
 
@@ -21,10 +22,10 @@ export function getPool(): pg.Pool {
   const connectionString = process.env.DATABASE_URL;
 
   if (!connectionString) {
-    // When running in an environment without DATABASE_URL, create a dummy or throw helpful error
-    throw new Error(
-      'DATABASE_URL is not set. For production/Render, set DATABASE_URL (Session pooler: port 5432). For tests, inject a pg-mem pool.'
-    );
+    console.warn('⚠️ DATABASE_URL is not set. Initializing in-memory PostgreSQL instance for local development.');
+    const testDb = createTestDb();
+    globalPool = testDb.pool;
+    return globalPool;
   }
 
   globalPool = new Pool({

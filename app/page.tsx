@@ -119,14 +119,37 @@ export default function HomePage() {
         </div>
       </div>
 
-      {/* Core Architectural Promise */}
-      <div className="bg-white rounded-xl p-6 border border-slate-200 shadow-sm mb-8">
-        <h2 className="text-sm font-bold uppercase tracking-wider text-slate-500 mb-2">
-          Non-Negotiable Product Promise
-        </h2>
-        <blockquote className="text-slate-800 italic border-l-4 border-indigo-600 pl-4 py-2 text-lg font-serif">
-          &ldquo;No individual member can independently authorize a purchase. Every expenditure must satisfy the group&rsquo;s agreed policy and approval requirements.&rdquo;
-        </blockquote>
+      {/* Core Architectural Promise & Quick Demo Launch */}
+      <div className="bg-white rounded-xl p-6 border border-slate-200 shadow-sm mb-8 flex flex-col md:flex-row md:items-center justify-between gap-6">
+        <div className="max-w-2xl">
+          <h2 className="text-xs font-bold uppercase tracking-wider text-slate-500 mb-2">
+            Non-Negotiable Product Promise
+          </h2>
+          <blockquote className="text-slate-800 italic border-l-4 border-emerald-800 pl-4 py-1 text-lg font-serif">
+            &ldquo;No individual member can independently authorize a purchase. Every expenditure must satisfy the group&rsquo;s agreed policy and approval requirements.&rdquo;
+          </blockquote>
+        </div>
+        <div className="flex-shrink-0">
+          <button
+            onClick={async () => {
+              const ashaId = '20000000-0000-0000-0000-000000000001';
+              document.cookie = `quorum_member_id=${ashaId}; path=/; max-age=2592000`;
+              try {
+                await fetch('/api/auth/persona', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ memberId: ashaId }),
+                });
+              } catch {}
+              window.location.href = '/g/00000000-0000-0000-0000-000000000001';
+            }}
+            className="w-full md:w-auto inline-flex items-center justify-center px-6 py-3.5 rounded-xl bg-emerald-800 hover:bg-emerald-700 text-white font-semibold text-sm shadow-md hover:shadow-lg transition cursor-pointer gap-2"
+          >
+            <span>Open Demo Workspace</span>
+            <span className="text-emerald-300 font-mono text-xs">(as Asha Patel)</span>
+            <span>&rarr;</span>
+          </button>
+        </div>
       </div>
 
       {/* Grid of Core Architectural Subsystems */}

@@ -74,6 +74,8 @@ export async function GET(request: Request, context: RouteContext) {
     const proposals = proposalsRes.rows;
     if (proposals.length > 0) {
       const propIds = proposals.map((p) => p.id);
+      
+      // 5a. Guard Decisions
       const decisionsRes = await pool.query(
         `SELECT proposal_id, decision, result, created_at
          FROM guard_decisions
@@ -85,10 +87,46 @@ export async function GET(request: Request, context: RouteContext) {
       for (const d of decisionsRes.rows) {
         decMap.set(d.proposal_id, d);
       }
+
+      // 5b. Proposal Votes
+      const votesRes = await pool.query(
+        `SELECT v.proposal_id, v.member_id, v.kind, v.choice, v.created_at, u.display_name
+         FROM votes v
+         JOIN memberships m ON m.id = v.member_id
+         JOIN users u ON u.id = m.user_id
+         WHERE v.proposal_id = ANY($1::uuid[])
+         ORDER BY v.created_at ASC`,
+        [propIds]
+      );
+      const votesMap = new Map<string, any[]>();
+      for (const v of votesRes.rows) {
+        if (!votesMap.has(v.proposal_id)) {
+          votesMap.set(v.proposal_id, []);
+        }
+        votesMap.get(v.proposal_id)!.push(v);
+      }
+
+      // 5c. Proposal Payments
+      const paymentsRes = await pool.query(
+        `SELECT proposal_id, status, amount_cents, sender_batch_id, paypal_batch_id, paypal_item_id, error_code, created_at
+         FROM payments
+         WHERE proposal_id = ANY($1::uuid[])
+         ORDER BY created_at DESC`,
+        [propIds]
+      );
+      const paymentsMap = new Map<string, any>();
+      for (const py of paymentsRes.rows) {
+        if (!paymentsMap.has(py.proposal_id)) {
+          paymentsMap.set(py.proposal_id, py);
+        }
+      }
+
       for (const p of proposals) {
         const latest = decMap.get(p.id);
         p.last_guard_decision = latest?.decision || null;
         p.last_guard_result = latest?.result || null;
+        p.votes = votesMap.get(p.id) || [];
+        p.latest_payment = paymentsMap.get(p.id) || null;
       }
     }
 

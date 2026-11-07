@@ -22,7 +22,13 @@ export function getPool(): pg.Pool {
   const connectionString = process.env.DATABASE_URL;
 
   if (!connectionString) {
-    console.warn('⚠️ DATABASE_URL is not set. Initializing in-memory PostgreSQL instance for local development.');
+    // In production, direct PostgreSQL connection (Supabase Session Pooler port 5432) is strictly required
+    if (process.env.NODE_ENV === 'production' && process.env.ALLOW_IN_MEMORY_DB !== 'true') {
+      throw new Error(
+        'DATABASE_URL is not set. In production, a direct PostgreSQL connection string (Supabase Session Pooler port 5432) is strictly required.'
+      );
+    }
+    console.warn('⚠️ DATABASE_URL is not set. Running in-memory PostgreSQL instance for local development.');
     const testDb = createTestDb();
     globalPool = testDb.pool;
     return globalPool;

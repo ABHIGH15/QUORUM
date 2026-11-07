@@ -10,21 +10,15 @@ import {
   XCircle,
   AlertTriangle,
   RotateCcw,
-  Send,
   HelpCircle,
   Lock,
-  User,
   Users,
-  ChevronDown,
   DollarSign,
-  Info,
   Check,
   X,
-  ExternalLink,
-  Bot,
   FileText,
   Activity,
-  Layers,
+  Zap,
 } from 'lucide-react';
 
 interface Member {
@@ -48,7 +42,19 @@ interface Proposal {
   id: string;
   group_id: string;
   type: string;
-  status: 'DRAFT' | 'OPEN' | 'VETO_WINDOW' | 'EXECUTABLE' | 'EXECUTING' | 'EXECUTED' | 'EXECUTION_FAILED' | 'REJECTED' | 'VETOED' | 'BLOCKED' | 'CANCELLED' | 'EXPIRED';
+  status:
+    | 'DRAFT'
+    | 'OPEN'
+    | 'VETO_WINDOW'
+    | 'EXECUTABLE'
+    | 'EXECUTING'
+    | 'EXECUTED'
+    | 'EXECUTION_FAILED'
+    | 'REJECTED'
+    | 'VETOED'
+    | 'BLOCKED'
+    | 'CANCELLED'
+    | 'EXPIRED';
   created_by_kind: 'AGENT' | 'MEMBER' | 'SYSTEM';
   policy_version: number;
   vendor_id?: string;
@@ -122,7 +128,6 @@ export default function WorkspacePage({ params }: { params: { id: string } }) {
 
   // Active persona
   const [currentMemberId, setCurrentMemberId] = useState<string>(DEFAULT_MEMBERS[0].id);
-  const [personaOpen, setPersonaOpen] = useState(false);
 
   // Action status / feedback
   const [actionLoading, setActionLoading] = useState<string | null>(null);
@@ -131,44 +136,15 @@ export default function WorkspacePage({ params }: { params: { id: string } }) {
   // Why Drawer state
   const [selectedWhyProposal, setSelectedWhyProposal] = useState<Proposal | null>(null);
 
-  // Demo reset
+  // Demo shortcut & reset
+  const [shortcutLoading, setShortcutLoading] = useState(false);
   const [resetSecret, setResetSecret] = useState('');
   const [resetting, setResetting] = useState(false);
   const [resetMessage, setResetMessage] = useState<string | null>(null);
 
-  // Live countdown timer hook
+  // Live countdown timer hook & zero-trigger refetch
   const [now, setNow] = useState<number>(Date.now());
-  useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, []);
-
-  // Initialize active persona from cookie on mount
-  useEffect(() => {
-    const cookieMatch = document.cookie.match(/(?:^|;\s*)quorum_member_id=([^;]+)/);
-    if (cookieMatch) {
-      const savedId = decodeURIComponent(cookieMatch[1].trim());
-      if (DEFAULT_MEMBERS.some((m) => m.id === savedId)) {
-        setCurrentMemberId(savedId);
-      }
-    }
-  }, []);
-
-  // Switch persona handler
-  const handleSwitchPersona = async (memberId: string) => {
-    setCurrentMemberId(memberId);
-    setPersonaOpen(false);
-    document.cookie = `quorum_member_id=${encodeURIComponent(memberId)}; path=/; max-age=2592000`;
-    try {
-      await fetch('/api/auth/persona', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ memberId }),
-      });
-    } catch (e) {
-      console.warn('Failed to sync persona cookie with backend', e);
-    }
-  };
+  const [hasRefetchedForVetoEnd, setHasRefetchedForVetoEnd] = useState(false);
 
   // Fetch full state from backend
   const fetchState = useCallback(async () => {
@@ -198,6 +174,38 @@ export default function WorkspacePage({ params }: { params: { id: string } }) {
     fetchState();
   }, [fetchState]);
 
+  // Read persona cookie on mount
+  useEffect(() => {
+    const cookieMatch = document.cookie.match(/(?:^|;\s*)quorum_member_id=([^;]+)/);
+    if (cookieMatch) {
+      const savedId = decodeURIComponent(cookieMatch[1].trim());
+      if (DEFAULT_MEMBERS.some((m) => m.id === savedId)) {
+        setCurrentMemberId(savedId);
+      }
+    }
+  }, []);
+
+  // Countdown timer with reactive refetch on countdown zero
+  useEffect(() => {
+    const timer = setInterval(() => {
+      const currentMs = Date.now();
+      setNow(currentMs);
+
+      // Check if any proposal in VETO_WINDOW just reached zero
+      const activeVetoProp = state?.proposals?.find((p) => p.status === 'VETO_WINDOW' && p.veto_ends_at);
+      if (activeVetoProp && activeVetoProp.veto_ends_at) {
+        const remaining = new Date(activeVetoProp.veto_ends_at).getTime() - currentMs;
+        if (remaining <= 0 && !hasRefetchedForVetoEnd) {
+          setHasRefetchedForVetoEnd(true);
+          fetchState();
+        } else if (remaining > 0 && hasRefetchedForVetoEnd) {
+          setHasRefetchedForVetoEnd(false);
+        }
+      }
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [fetchState, state?.proposals, hasRefetchedForVetoEnd]);
+
   // Polling behaviour: 3s while any proposal is in VETO_WINDOW or EXECUTING, else 10s
   useEffect(() => {
     const hasActiveWindow = state?.proposals?.some(
@@ -211,6 +219,21 @@ export default function WorkspacePage({ params }: { params: { id: string } }) {
 
     return () => clearInterval(poller);
   }, [fetchState, state?.proposals]);
+
+  // Switch persona handler
+  const handleSwitchPersona = async (memberId: string) => {
+    setCurrentMemberId(memberId);
+    document.cookie = `quorum_member_id=${encodeURIComponent(memberId)}; path=/; max-age=2592000`;
+    try {
+      await fetch('/api/auth/persona', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ memberId }),
+      });
+    } catch (e) {
+      console.warn('Failed to sync persona cookie with backend', e);
+    }
+  };
 
   // Cast vote or veto
   const handleVote = async (proposalId: string, choice: 'APPROVE' | 'REJECT' | 'VETO') => {
@@ -269,10 +292,48 @@ export default function WorkspacePage({ params }: { params: { id: string } }) {
     }
   };
 
+  // Demo Shortcut: Cast approvals as Asha, Ben, Chloe, Dev
+  const handleDemoApprovalsShortcut = async () => {
+    const openProposal = state?.proposals?.find((p) => p.status === 'OPEN');
+    if (!openProposal) {
+      setActionError('No OPEN proposal found in feed to approve.');
+      return;
+    }
+    setShortcutLoading(true);
+    setActionError(null);
+    try {
+      const voterIds = [
+        '20000000-0000-0000-0000-000000000001', // Asha
+        '20000000-0000-0000-0000-000000000002', // Ben
+        '20000000-0000-0000-0000-000000000003', // Chloe
+        '20000000-0000-0000-0000-000000000004', // Dev
+      ];
+      for (const memberId of voterIds) {
+        const res = await fetch(`/api/proposals/${openProposal.id}/vote`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-quorum-member-id': memberId,
+          },
+          body: JSON.stringify({ memberId, choice: 'APPROVE' }),
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.error || `Vote failed for member ${memberId}`);
+        }
+      }
+      await fetchState();
+    } catch (err: any) {
+      setActionError(err.message || 'Shortcut failed');
+    } finally {
+      setShortcutLoading(false);
+    }
+  };
+
   // Demo reset
   const handleDemoReset = async () => {
     if (!resetSecret) {
-      setResetMessage('Please enter your DEMO_RESET_SECRET (from Render or .env)');
+      setResetMessage('Please enter your DEMO_RESET_SECRET');
       return;
     }
     setResetting(true);
@@ -281,7 +342,7 @@ export default function WorkspacePage({ params }: { params: { id: string } }) {
       const res = await fetch('/api/demo/reset', {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${resetSecret.trim()}`,
+          Authorization: `Bearer ${resetSecret.trim()}`,
         },
       });
       const data = await res.json();
@@ -297,16 +358,11 @@ export default function WorkspacePage({ params }: { params: { id: string } }) {
     }
   };
 
-  const activePersona = useMemo(
-    () => DEFAULT_MEMBERS.find((m) => m.id === currentMemberId) || DEFAULT_MEMBERS[0],
-    [currentMemberId]
-  );
-
   return (
     <div className="min-h-screen bg-[#faf9f6] text-[#18181b] flex flex-col font-sans">
-      {/* Top Navigation Bar */}
+      {/* Top Navigation Bar with Clickable Member Avatar Row */}
       <header className="sticky top-0 z-30 bg-[#faf9f6]/95 backdrop-blur-md border-b border-[#e7e5df] px-4 sm:px-6 py-3">
-        <div className="max-w-7xl mx-auto flex items-center justify-between gap-4">
+        <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-4">
           {/* Logo & Group Title */}
           <div className="flex items-center gap-3">
             <Link
@@ -338,61 +394,46 @@ export default function WorkspacePage({ params }: { params: { id: string } }) {
             </div>
           </div>
 
-          {/* Persona Switcher Dropdown */}
-          <div className="relative">
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-slate-600 hidden md:inline">Acting as:</span>
-              <button
-                onClick={() => setPersonaOpen(!personaOpen)}
-                className="flex items-center gap-2.5 px-3 py-1.5 rounded-xl bg-white border border-[#dcd8d0] shadow-sm hover:border-[#064e3b] transition cursor-pointer text-left"
-              >
-                <div
-                  className={`w-6 h-6 rounded-full ${activePersona.color} text-white flex items-center justify-center text-[10px] font-bold`}
-                >
-                  {activePersona.initials}
-                </div>
-                <div>
-                  <span className="text-xs font-semibold text-slate-900 block leading-tight">
-                    {activePersona.name}
-                  </span>
-                  <span className="text-[10px] text-slate-500 block leading-none font-mono">
-                    {activePersona.role}
-                  </span>
-                </div>
-                <ChevronDown className="w-3.5 h-3.5 text-slate-400 ml-1" />
-              </button>
-            </div>
-
-            {/* Dropdown Menu */}
-            {personaOpen && (
-              <div className="absolute right-0 mt-2 w-64 bg-white rounded-xl shadow-xl border border-slate-200 py-1.5 z-50">
-                <div className="px-3 py-1.5 border-b border-slate-100 text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
-                  Select Member Persona (I7 Test)
-                </div>
-                {DEFAULT_MEMBERS.map((member) => (
+          {/* Clickable Row of 6 Member Avatars (1 click to switch persona) */}
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-slate-500 hidden xl:inline font-medium">Acting as:</span>
+            <div className="flex items-center gap-1 sm:gap-1.5 p-1 bg-white border border-[#dcd8d0] rounded-2xl shadow-sm overflow-x-auto max-w-[280px] sm:max-w-none">
+              {DEFAULT_MEMBERS.map((member) => {
+                const isActive = member.id === currentMemberId;
+                return (
                   <button
                     key={member.id}
                     onClick={() => handleSwitchPersona(member.id)}
-                    className={`w-full flex items-center gap-3 px-3 py-2 text-left hover:bg-slate-50 transition cursor-pointer ${
-                      member.id === currentMemberId ? 'bg-emerald-50/70 font-medium' : ''
+                    title={`Act as ${member.name} (${member.role})`}
+                    className={`flex items-center gap-1.5 px-2.5 py-1 rounded-xl transition cursor-pointer text-xs ${
+                      isActive
+                        ? 'bg-[#064e3b] text-white font-semibold shadow-sm'
+                        : 'bg-transparent text-slate-700 hover:bg-slate-100'
                     }`}
                   >
-                    <div
-                      className={`w-6 h-6 rounded-full ${member.color} text-white flex items-center justify-center text-[10px] font-bold flex-shrink-0`}
+                    <span
+                      className={`w-5 h-5 rounded-full flex items-center justify-center text-[9px] font-bold ${
+                        isActive ? 'bg-white text-[#064e3b]' : `${member.color} text-white`
+                      }`}
                     >
                       {member.initials}
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="text-xs text-slate-900 truncate">{member.name}</div>
-                      <div className="text-[10px] text-slate-500">{member.role}</div>
-                    </div>
-                    {member.id === currentMemberId && (
-                      <Check className="w-4 h-4 text-emerald-700 flex-shrink-0" />
+                    </span>
+                    <span className="hidden md:inline text-[11px] font-medium truncate max-w-[65px]">
+                      {member.name.split(' ')[0]}
+                    </span>
+                    {member.role === 'Chair' && (
+                      <span
+                        className={`hidden sm:inline text-[8px] font-mono uppercase px-1 rounded ${
+                          isActive ? 'bg-white/20 text-emerald-100' : 'bg-slate-100 text-slate-500'
+                        }`}
+                      >
+                        Chair
+                      </span>
                     )}
                   </button>
-                ))}
-              </div>
-            )}
+                );
+              })}
+            </div>
           </div>
         </div>
       </header>
@@ -406,7 +447,7 @@ export default function WorkspacePage({ params }: { params: { id: string } }) {
           </div>
           <button
             onClick={() => setActionError(null)}
-            className="text-rose-500 hover:text-rose-800 font-bold ml-2"
+            className="text-rose-500 hover:text-rose-800 font-bold ml-2 cursor-pointer"
           >
             ✕
           </button>
@@ -448,7 +489,7 @@ export default function WorkspacePage({ params }: { params: { id: string } }) {
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
               {/* LEFT COLUMN: Policy & Budget & Funding (col-span-12 lg:col-span-4 space-y-6) */}
               <div className="col-span-12 lg:col-span-4 space-y-6">
-                {/* Policy Card */}
+                {/* Policy Card (Rendered directly from Policy JSON) */}
                 <div className="bg-white rounded-2xl p-5 border border-[#e4e2dd] shadow-sm">
                   <div className="flex items-center justify-between mb-3 pb-2 border-b border-slate-100">
                     <div className="flex items-center gap-2">
@@ -465,33 +506,37 @@ export default function WorkspacePage({ params }: { params: { id: string } }) {
                   <div className="space-y-2.5 text-xs text-slate-700">
                     <div className="flex justify-between items-center py-1 border-b border-slate-50">
                       <span className="text-slate-500">Hard Cap (Single Purchase)</span>
-                      <span className="font-mono font-semibold text-slate-900">$200.00</span>
+                      <span className="font-mono font-semibold text-slate-900">
+                        ${(((state?.policy?.hard_cap_cents ?? 20000)) / 100).toFixed(2)}
+                      </span>
                     </div>
                     <div className="flex justify-between items-center py-1 border-b border-slate-50">
                       <span className="text-slate-500">Unanimity Threshold</span>
-                      <span className="font-mono font-semibold text-slate-900">&gt; $150.00 (All 6)</span>
+                      <span className="font-mono font-semibold text-slate-900">
+                        &gt; ${(((state?.policy?.unanimous_above_cents ?? 15000)) / 100).toFixed(2)} (All 6)
+                      </span>
                     </div>
                     <div className="py-1 border-b border-slate-50">
                       <div className="text-slate-500 mb-1">Approval Tiers</div>
                       <div className="space-y-1 font-mono text-[11px] pl-2 border-l-2 border-emerald-500">
-                        <div className="flex justify-between">
-                          <span>Up to $60.00</span>
-                          <span className="font-semibold text-slate-900">2 votes required</span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span>$60.01 – $150.00</span>
-                          <span className="font-semibold text-slate-900">4 votes required</span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span>$150.01 – $200.00</span>
-                          <span className="font-semibold text-slate-900">6 votes (Unanimous)</span>
-                        </div>
+                        {(state?.policy?.approval_tiers || [
+                          { max_cents: 6000, votes_required: 2 },
+                          { max_cents: 15000, votes_required: 4 },
+                          { max_cents: 20000, votes_required: 6 },
+                        ]).map((tier, idx) => (
+                          <div key={idx} className="flex justify-between">
+                            <span>Up to ${(tier.max_cents / 100).toFixed(2)}</span>
+                            <span className="font-semibold text-slate-900">
+                              {tier.votes_required} votes required
+                            </span>
+                          </div>
+                        ))}
                       </div>
                     </div>
                     <div className="flex justify-between items-center py-1 border-b border-slate-50">
                       <span className="text-slate-500">Mandatory Veto Window</span>
                       <span className="font-mono font-semibold text-slate-900">
-                        {state?.policy?.veto_window_minutes || 1440} min (24 hrs)
+                        {state?.policy?.veto_window_minutes ?? 2} min
                       </span>
                     </div>
                     <div className="flex justify-between items-center py-1">
@@ -568,12 +613,13 @@ export default function WorkspacePage({ params }: { params: { id: string } }) {
 
                   <div className="grid grid-cols-2 gap-2">
                     {DEFAULT_MEMBERS.map((m) => (
-                      <div
+                      <button
                         key={m.id}
-                        className={`p-2 rounded-xl border flex items-center gap-2 transition ${
+                        onClick={() => handleSwitchPersona(m.id)}
+                        className={`p-2 rounded-xl border flex items-center gap-2 transition cursor-pointer text-left ${
                           m.id === currentMemberId
                             ? 'bg-emerald-50/50 border-emerald-300 ring-1 ring-emerald-400'
-                            : 'bg-slate-50/60 border-slate-200'
+                            : 'bg-slate-50/60 border-slate-200 hover:bg-slate-100'
                         }`}
                       >
                         <div
@@ -590,7 +636,7 @@ export default function WorkspacePage({ params }: { params: { id: string } }) {
                             $80 Captured
                           </div>
                         </div>
-                      </div>
+                      </button>
                     ))}
                   </div>
                 </div>
@@ -604,7 +650,7 @@ export default function WorkspacePage({ params }: { params: { id: string } }) {
                       Governance & Proposals Feed
                     </h2>
                     <p className="text-xs text-slate-600">
-                      Deterministic review, voting, veto enforcement, and locked PayPal execution.
+                      Deterministic review, voting, veto window enforcement, and locked PayPal payout execution.
                     </p>
                   </div>
                   <button
@@ -623,7 +669,7 @@ export default function WorkspacePage({ params }: { params: { id: string } }) {
                       No Proposals in Feed
                     </h3>
                     <p className="text-xs text-slate-500 max-w-md mx-auto mb-6">
-                      Use the AI Purchasing Agent on the right to search the curated catalog and generate proposals (e.g. &ldquo;Find a projector for our meeting room&rdquo;).
+                      Proposals drafted by the AI Purchasing Agent or group members appear here for review and voting.
                     </p>
                   </div>
                 ) : (
@@ -639,7 +685,10 @@ export default function WorkspacePage({ params }: { params: { id: string } }) {
                       const amount = (proposal.amount_cents / 100).toFixed(2);
                       const vendorName = proposal.vendor_name || payload.vendorName || proposal.vendor_id || 'Curated Vendor';
                       const category = proposal.category || payload.category || 'equipment';
-                      const rationale = payload.rationale || payload.description || 'Group purchase proposal submitted for member approval.';
+                      const rationale =
+                        payload.rationale ||
+                        payload.description ||
+                        'Group purchase proposal submitted for member approval.';
 
                       // Votes summary
                       const votes = proposal.votes || [];
@@ -653,20 +702,17 @@ export default function WorkspacePage({ params }: { params: { id: string } }) {
                         proposal.last_guard_result?.votesRequired ||
                         (proposal.amount_cents <= 6000 ? 2 : proposal.amount_cents <= 15000 ? 4 : 6);
 
-                      // Veto countdown calculation
+                      // Live Veto Countdown
                       let vetoCountdownStr: string | null = null;
-                      let vetoExpired = false;
                       if (proposal.status === 'VETO_WINDOW' && proposal.veto_ends_at) {
                         const endsAt = new Date(proposal.veto_ends_at).getTime();
                         const diffMs = endsAt - now;
                         if (diffMs > 0) {
-                          const hours = Math.floor(diffMs / 3600000);
-                          const minutes = Math.floor((diffMs % 3600000) / 60000);
+                          const minutes = Math.floor(diffMs / 60000);
                           const seconds = Math.floor((diffMs % 60000) / 1000);
-                          vetoCountdownStr = `${hours > 0 ? `${hours}h ` : ''}${minutes}m ${seconds}s`;
+                          vetoCountdownStr = `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
                         } else {
-                          vetoExpired = true;
-                          vetoCountdownStr = 'Veto window concluded';
+                          vetoCountdownStr = '00:00 (Concluded)';
                         }
                       }
 
@@ -690,11 +736,11 @@ export default function WorkspacePage({ params }: { params: { id: string } }) {
                                 <h3 className="font-serif font-bold text-lg text-slate-900 leading-snug">
                                   {itemTitle}
                                 </h3>
-                                {/* Guard Status Chip */}
+                                {/* Guard Status Chip with Icons */}
                                 {proposal.status === 'BLOCKED' && (
                                   <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-rose-100 text-rose-800 border border-rose-300">
                                     <ShieldAlert className="w-3.5 h-3.5" />
-                                    BLOCKED BY GUARD
+                                    BLOCKED BY POLICY
                                   </span>
                                 )}
                                 {proposal.status === 'OPEN' && (
@@ -749,41 +795,43 @@ export default function WorkspacePage({ params }: { params: { id: string } }) {
                           </div>
 
                           {/* Rationale text */}
-                          <p className="text-xs text-slate-700 mb-4 bg-slate-50/70 p-3 rounded-xl border border-slate-100 leading-relaxed">
+                          <p className="text-xs text-slate-700 mb-4 bg-slate-50/70 p-3 rounded-xl border border-slate-100 leading-relaxed font-sans">
                             {rationale}
                           </p>
 
-                          {/* Blocked Alert Notice */}
+                          {/* Blocked Alert: Dynamic from Guard decision */}
                           {proposal.status === 'BLOCKED' && (
                             <div className="mb-4 p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-900">
                               <div className="font-semibold flex items-center gap-1.5 mb-1 text-rose-800">
                                 <ShieldAlert className="w-4 h-4 text-rose-600 flex-shrink-0" />
-                                <span>Guard Invariant Violation (S1 Scene)</span>
+                                <span>
+                                  Policy Rejection: {proposal.last_guard_result?.blockingCode || 'POLICY_LIMIT_EXCEEDED'}
+                                </span>
                               </div>
-                              <p className="text-rose-700 leading-relaxed">
+                              <p className="text-rose-700 leading-relaxed font-sans">
                                 {proposal.last_guard_result?.blockingDetail ||
-                                  `Requested amount ($${amount}) exceeds the group's hard cap ($200.00). Quorum Guard rejected this proposal unconditionally in PROPOSAL phase.`}
+                                  `Requested amount ($${amount}) exceeds the group's agreed cap ($200.00). Evaluated and blocked by Quorum Guard.`}
                               </p>
                             </div>
                           )}
 
-                          {/* Veto Window Banner */}
+                          {/* Live Veto Window Banner with Real-time Countdown */}
                           {proposal.status === 'VETO_WINDOW' && (
-                            <div className="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-900 flex items-center justify-between gap-3">
-                              <div className="flex items-center gap-2">
+                            <div className="mb-4 p-3.5 bg-amber-50 border border-amber-300 rounded-xl text-xs text-amber-900 flex flex-wrap items-center justify-between gap-3 shadow-xs">
+                              <div className="flex items-center gap-2.5">
                                 <Clock className="w-4 h-4 text-amber-700 animate-spin" />
                                 <div>
-                                  <div className="font-semibold">
-                                    Approval Threshold Reached ({approvals.length} of {votesRequired})
+                                  <div className="font-semibold text-amber-950">
+                                    Approval Threshold Reached ({approvals.length} of {votesRequired} Approvals)
                                   </div>
-                                  <div className="text-amber-800 text-[11px]">
-                                    24-hour mandatory veto window is active. Any single member veto will immediately halt execution (I4).
+                                  <div className="text-amber-800 text-[11px] leading-tight">
+                                    Mandatory veto window is running. Any single member veto will immediately halt the purchase.
                                   </div>
                                 </div>
                               </div>
                               <div className="text-right flex-shrink-0">
-                                <span className="font-mono font-bold text-sm text-amber-900 bg-amber-100 px-2.5 py-1 rounded-md border border-amber-300">
-                                  {vetoCountdownStr || '24h 0m'}
+                                <span className="font-mono font-bold text-sm text-amber-950 bg-amber-200/70 px-3 py-1 rounded-lg border border-amber-400">
+                                  {vetoCountdownStr || '02:00'}
                                 </span>
                               </div>
                             </div>
@@ -794,7 +842,7 @@ export default function WorkspacePage({ params }: { params: { id: string } }) {
                             <div className="mb-4 p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-xs text-emerald-900">
                               <div className="font-semibold flex items-center gap-1.5 mb-1 text-emerald-800">
                                 <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-                                <span>Payment Executed via PayPal Sandbox Payouts (S3 Scene)</span>
+                                <span>Purchase Executed via PayPal Sandbox Payouts</span>
                               </div>
                               <div className="font-mono text-[11px] text-emerald-800 flex flex-wrap gap-x-4 gap-y-1">
                                 <span>
@@ -806,7 +854,7 @@ export default function WorkspacePage({ params }: { params: { id: string } }) {
                                   </strong>
                                 </span>
                                 <span>Status: SUCCEEDED</span>
-                                <span>Row Lock: Verified</span>
+                                <span>Two-Phase Lock: Verified</span>
                               </div>
                             </div>
                           )}
@@ -816,15 +864,15 @@ export default function WorkspacePage({ params }: { params: { id: string } }) {
                             <div className="mb-4 p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-900">
                               <div className="font-semibold flex items-center gap-1.5 text-rose-800">
                                 <XCircle className="w-4 h-4 text-rose-600" />
-                                <span>Halted by Member Veto (S2 Scene)</span>
+                                <span>Purchase Cancelled by Member Veto</span>
                               </div>
                               <p className="text-rose-700 text-[11px] mt-0.5">
-                                A member exercised their sovereign veto during the veto window. Proposal is permanently halted (I4).
+                                A member exercised their veto during the veto window. The proposal is permanently halted and cannot execute.
                               </p>
                             </div>
                           )}
 
-                          {/* Vote Tally & Cast Votes */}
+                          {/* Vote Tally & Member Cast Chips */}
                           {proposal.status !== 'BLOCKED' && (
                             <div className="mb-4 bg-slate-50 p-3 rounded-xl border border-slate-100">
                               <div className="flex items-center justify-between text-xs mb-1.5">
@@ -1016,33 +1064,55 @@ export default function WorkspacePage({ params }: { params: { id: string } }) {
               </div>
             </div>
 
-            {/* Footer Demo Tools */}
-            <footer className="pt-6 pb-12 border-t border-slate-200 text-xs text-slate-500">
-              <div className="flex flex-col md:flex-row items-center justify-between gap-4 bg-slate-100 p-4 rounded-xl border border-slate-200">
-                <div className="flex items-center gap-2">
+            {/* Footer Demo Tools & Shortcuts */}
+            <footer className="pt-6 pb-12 border-t border-slate-200 text-xs text-slate-500 space-y-4">
+              {/* Demo Tools Bar */}
+              <div className="flex flex-col lg:flex-row items-center justify-between gap-4 bg-slate-100 p-4 rounded-xl border border-slate-200">
+                <div className="flex items-center gap-3">
                   <div className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" />
-                  <span className="font-semibold text-slate-700">Evaluation Demo Tools:</span>
-                  <span>Reset demo group to $480.00 sandbox state.</span>
+                  <div>
+                    <span className="font-semibold text-slate-800 block">Evaluation Shortcuts:</span>
+                    <span className="text-[11px] text-slate-600">
+                      Real Guard-evaluated shortcuts to test voting and reset state.
+                    </span>
+                  </div>
                 </div>
-                <div className="flex items-center gap-2 w-full md:w-auto">
-                  <input
-                    type="password"
-                    placeholder="DEMO_RESET_SECRET"
-                    value={resetSecret}
-                    onChange={(e) => setResetSecret(e.target.value)}
-                    className="px-3 py-1.5 rounded-lg border border-slate-300 bg-white text-xs font-mono text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-700"
-                  />
+
+                <div className="flex flex-wrap items-center gap-3 w-full lg:w-auto">
+                  {/* Demo Shortcut: Cast 4 Approvals */}
                   <button
-                    onClick={handleDemoReset}
-                    disabled={resetting}
-                    className="px-3.5 py-1.5 bg-[#064e3b] hover:bg-[#053f30] text-white rounded-lg text-xs font-semibold transition disabled:opacity-50 cursor-pointer flex-shrink-0"
+                    onClick={handleDemoApprovalsShortcut}
+                    disabled={shortcutLoading}
+                    className="px-3.5 py-1.5 bg-emerald-800 hover:bg-emerald-700 text-white rounded-lg text-xs font-semibold shadow-xs transition disabled:opacity-50 cursor-pointer flex items-center gap-1.5"
                   >
-                    {resetting ? 'Resetting...' : 'Reset Demo'}
+                    <Zap className="w-3.5 h-3.5 text-emerald-300" />
+                    <span>
+                      {shortcutLoading ? 'Casting votes...' : 'Demo Shortcut: 4 Approvals (Asha, Ben, Chloe, Dev)'}
+                    </span>
                   </button>
+
+                  {/* Reset Demo State */}
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="password"
+                      placeholder="DEMO_RESET_SECRET"
+                      value={resetSecret}
+                      onChange={(e) => setResetSecret(e.target.value)}
+                      className="px-3 py-1.5 rounded-lg border border-slate-300 bg-white text-xs font-mono text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-700"
+                    />
+                    <button
+                      onClick={handleDemoReset}
+                      disabled={resetting}
+                      className="px-3 py-1.5 bg-slate-800 hover:bg-slate-900 text-white rounded-lg text-xs font-semibold transition disabled:opacity-50 cursor-pointer flex-shrink-0"
+                    >
+                      {resetting ? 'Resetting...' : 'Reset Pool ($480)'}
+                    </button>
+                  </div>
                 </div>
               </div>
+
               {resetMessage && (
-                <div className="mt-2 text-center text-xs font-mono font-medium text-slate-700">
+                <div className="text-center text-xs font-mono font-medium text-slate-700">
                   {resetMessage}
                 </div>
               )}
@@ -1051,7 +1121,7 @@ export default function WorkspacePage({ params }: { params: { id: string } }) {
         )}
       </main>
 
-      {/* "Why?" Guard Decision Audit Drawer (Step B Feature) */}
+      {/* "Why?" Guard Decision Audit Drawer (Milestone B Feature) */}
       {selectedWhyProposal && (
         <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl max-w-xl w-full max-h-[85vh] flex flex-col shadow-2xl border border-slate-200 overflow-hidden animate-in fade-in zoom-in-95 duration-200">
@@ -1075,7 +1145,9 @@ export default function WorkspacePage({ params }: { params: { id: string } }) {
             <div className="p-6 overflow-y-auto space-y-4 text-xs text-slate-800">
               <div>
                 <h4 className="font-bold text-sm text-slate-900 mb-1">
-                  {selectedWhyProposal.payload?.itemName || 'Purchasing Proposal'}
+                  {selectedWhyProposal.payload?.item_name ||
+                    selectedWhyProposal.payload?.itemName ||
+                    'Purchasing Proposal'}
                 </h4>
                 <div className="flex items-center gap-3 font-mono text-[11px] text-slate-500">
                   <span>Amount: ${(selectedWhyProposal.amount_cents / 100).toFixed(2)}</span>
@@ -1086,42 +1158,76 @@ export default function WorkspacePage({ params }: { params: { id: string } }) {
                 </div>
               </div>
 
-              {/* Blocking reason notice */}
-              {selectedWhyProposal.status === 'BLOCKED' && (
-                <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-rose-900">
-                  <div className="font-bold text-rose-800 flex items-center gap-1.5 mb-1">
-                    <ShieldAlert className="w-4 h-4 text-rose-600" />
-                    <span>Blocking Check: {selectedWhyProposal.last_guard_result?.blockingCode || 'EXCEEDS_HARD_CAP'}</span>
+              {/* Primary Blocking Reason (Led at the top) */}
+              {selectedWhyProposal.last_guard_result?.checks?.some((c: any) => !c.pass) && (
+                <div className="p-3.5 bg-rose-50 border border-rose-300 rounded-xl text-rose-950">
+                  <div className="font-bold text-rose-900 flex items-center gap-1.5 mb-1 text-sm">
+                    <ShieldAlert className="w-4 h-4 text-rose-600 flex-shrink-0" />
+                    <span>
+                      Primary Blocking Reason:{' '}
+                      {selectedWhyProposal.last_guard_result?.blockingCode ||
+                        selectedWhyProposal.last_guard_result?.checks?.find((c: any) => !c.pass)?.code ||
+                        'CHECK_FAILED'}
+                    </span>
                   </div>
-                  <p className="text-rose-700 text-[11px] leading-relaxed">
+                  <p className="text-rose-800 text-xs leading-relaxed font-sans">
                     {selectedWhyProposal.last_guard_result?.blockingDetail ||
-                      `Proposal was blocked because its requested amount ($${(selectedWhyProposal.amount_cents / 100).toFixed(2)}) violates group policy limits.`}
+                      selectedWhyProposal.last_guard_result?.checks?.find((c: any) => !c.pass)?.detail ||
+                      'Proposal violates group policy requirements and was blocked by Quorum Guard.'}
                   </p>
                 </div>
               )}
 
-              {/* Guard Checks Breakdown */}
+              {/* Quantitative Snapshot */}
+              <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200 font-mono text-xs space-y-1.5 text-slate-800">
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Proposal Amount:</span>
+                  <span className="font-bold text-slate-900">
+                    ${(selectedWhyProposal.amount_cents / 100).toFixed(2)}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Policy Hard Cap:</span>
+                  <span className="font-bold text-slate-900">
+                    ${(((state?.policy?.hard_cap_cents ?? 20000)) / 100).toFixed(2)}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Votes Required:</span>
+                  <span className="font-bold text-slate-900">
+                    {selectedWhyProposal.last_guard_result?.votesRequired || 4} of 6 eligible
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Approvals Recorded:</span>
+                  <span className="font-bold text-emerald-700">
+                    {selectedWhyProposal.votes?.filter((v) => v.choice === 'APPROVE').length || 0}
+                  </span>
+                </div>
+                <div className="flex justify-between pt-1 border-t border-slate-200">
+                  <span className="text-slate-500">Budget Remaining After Purchase:</span>
+                  <span className="font-bold text-slate-900">
+                    ${(((state?.funds?.availableCents ?? 48000) - selectedWhyProposal.amount_cents) / 100).toFixed(2)}
+                  </span>
+                </div>
+              </div>
+
+              {/* Guard Policy Checks Breakdown (Grouped into Failed & Passed) */}
               <div>
                 <div className="font-bold text-slate-700 uppercase tracking-wider text-[10px] mb-2">
-                  Guard Policy Checks Evaluated (100% Pure Function)
+                  All Guard Checks Evaluated
                 </div>
                 <div className="space-y-1.5 font-mono text-[11px]">
-                  {(selectedWhyProposal.last_guard_result?.checks || [
-                    { code: 'CAP_CHECK', passed: selectedWhyProposal.amount_cents <= 20000, detail: `Amount $${(selectedWhyProposal.amount_cents / 100).toFixed(2)} vs Hard Cap $200.00` },
-                    { code: 'VENDOR_ALLOWLIST', passed: true, detail: 'Vendor is verified in allowlist' },
-                    { code: 'CATEGORY_ALLOWED', passed: true, detail: 'Category matches group policy charter' },
-                    { code: 'BUDGET_AVAILABLE', passed: true, detail: 'Available pool funds exceed proposal amount' },
-                    { code: 'ELIGIBLE_VOTERS', passed: true, detail: '6 active contributing members eligible' },
-                  ]).map((chk: any) => (
+                  {(selectedWhyProposal.last_guard_result?.checks || []).map((chk: any) => (
                     <div
                       key={chk.code}
                       className={`p-2.5 rounded-lg border flex items-start gap-2.5 ${
-                        chk.passed
-                          ? 'bg-emerald-50/50 border-emerald-200 text-emerald-900'
-                          : 'bg-rose-50 border-rose-300 text-rose-900 font-bold'
+                        chk.pass
+                          ? 'bg-emerald-50/40 border-emerald-200 text-emerald-950'
+                          : 'bg-rose-50 border-rose-300 text-rose-950 font-bold'
                       }`}
                     >
-                      {chk.passed ? (
+                      {chk.pass ? (
                         <Check className="w-4 h-4 text-emerald-600 flex-shrink-0 mt-0.5" />
                       ) : (
                         <X className="w-4 h-4 text-rose-600 flex-shrink-0 mt-0.5" />
@@ -1129,32 +1235,18 @@ export default function WorkspacePage({ params }: { params: { id: string } }) {
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center justify-between">
                           <span className="font-semibold">{chk.code}</span>
-                          <span className="text-[10px] uppercase font-bold">{chk.passed ? 'PASSED' : 'FAILED'}</span>
+                          <span
+                            className={`text-[9px] uppercase px-1.5 py-0.2 rounded font-bold ${
+                              chk.pass ? 'bg-emerald-200/60 text-emerald-900' : 'bg-rose-200 text-rose-900'
+                            }`}
+                          >
+                            {chk.pass ? 'PASSED' : 'FAILED'}
+                          </span>
                         </div>
                         <div className="text-[10px] text-slate-600 font-sans mt-0.5">{chk.detail}</div>
                       </div>
                     </div>
                   ))}
-                </div>
-              </div>
-
-              {/* Quantitative Snapshot */}
-              <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 font-mono text-[11px] space-y-1 text-slate-700">
-                <div className="flex justify-between">
-                  <span>Proposal Amount:</span>
-                  <span className="font-bold text-slate-900">${(selectedWhyProposal.amount_cents / 100).toFixed(2)}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span>Policy Hard Cap:</span>
-                  <span className="font-bold text-slate-900">$200.00</span>
-                </div>
-                <div className="flex justify-between">
-                  <span>Votes Required:</span>
-                  <span className="font-bold text-slate-900">{selectedWhyProposal.last_guard_result?.votesRequired || 4} of 6</span>
-                </div>
-                <div className="flex justify-between">
-                  <span>Approvals Recorded:</span>
-                  <span className="font-bold text-emerald-700">{selectedWhyProposal.votes?.filter((v) => v.choice === 'APPROVE').length || 0}</span>
                 </div>
               </div>
             </div>

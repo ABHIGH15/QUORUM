@@ -103,7 +103,7 @@ export async function POST(request: Request) {
         { max_cents: 15000, votes_required: 4 },
         { max_cents: 20000, votes_required: 6 },
       ],
-      veto_window_minutes: 1440,
+      veto_window_minutes: 2, // 2-minute veto window for live demo evaluation (SPEC §5, §11)
       proposal_expiry_hours: 72,
       vendors: {
         mode: 'OPEN',

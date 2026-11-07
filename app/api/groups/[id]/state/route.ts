@@ -61,6 +61,14 @@ export async function GET(request: Request, context: RouteContext) {
     const netReserved = Math.max(0, parseInt(b.reserved, 10) - parseInt(b.released, 10));
     const availableCents = parseInt(b.captured, 10) - parseInt(b.refunded, 10) - parseInt(b.paid, 10) - netReserved;
 
+    // 4b. Lazy state synchronization: advance concluded veto windows to EXECUTABLE
+    await pool.query(
+      `UPDATE proposals
+       SET status = 'EXECUTABLE'
+       WHERE group_id = $1 AND status = 'VETO_WINDOW' AND veto_ends_at IS NOT NULL AND veto_ends_at <= NOW()`,
+      [groupId]
+    );
+
     // 5. Proposals
     const proposalsRes = await pool.query(
       `SELECT p.*, v.name as vendor_name

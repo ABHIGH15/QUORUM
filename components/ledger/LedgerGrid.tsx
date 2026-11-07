@@ -100,15 +100,15 @@ export default function LedgerGrid({ ledger, currency = 'USD' }: LedgerGridProps
 
           if (type.includes('CAPTURED')) {
             style = 'bg-emerald-50 text-emerald-800 border-emerald-300 font-semibold';
-          } else if (type.includes('RESERVED')) {
+          } else if (type === 'FUNDS_RESERVED') {
             style = 'bg-amber-50 text-amber-900 border-amber-300 font-semibold';
-          } else if (type.includes('PAYOUT_INITIATED')) {
+          } else if (type === 'PAYOUT_SUBMITTED') {
             style = 'bg-blue-50 text-blue-900 border-blue-300 font-semibold';
-          } else if (type.includes('PAYOUT_SUCCEEDED') || type.includes('PAYMENT_EXECUTED')) {
+          } else if (type === 'PAYOUT_SUCCEEDED') {
             style = 'bg-emerald-800 text-white font-bold';
-          } else if (type.includes('RELEASED')) {
+          } else if (type === 'FUNDS_RELEASED') {
             style = 'bg-teal-50 text-teal-800 border-teal-300';
-          } else if (type.includes('BLOCKED') || type.includes('FAILED') || type.includes('VETO')) {
+          } else if (type === 'PAYOUT_FAILED' || type === 'PAYOUT_UNCLAIMED' || type.includes('VETO')) {
             style = 'bg-rose-50 text-rose-800 border-rose-300 font-semibold';
           }
 

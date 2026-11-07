@@ -99,7 +99,16 @@ Quorum operates primarily in **Pooled Mode**, where member contributions are col
 
 ---
 
-## 7. Quick Start & Verification
+## 7. Financial & Governance Ledger (AG Grid Community)
+
+Quorum features an interactive, immutable financial and governance audit ledger built with **AG Grid Community v36** (`ag-grid-community` & `ag-grid-react`) using the Quartz theme:
+- Real-time client-side filtering, quick search, and column sorting.
+- Visual status badges for all spec transaction types (`CONTRIBUTION_CAPTURED`, `FUNDS_RESERVED`, `FUNDS_RELEASED`, `PAYOUT_SUBMITTED`, `PAYOUT_SUCCEEDED`, `VOTE_CAST`, `VETO_CAST`).
+- Deep-dive inspection modal displaying append-only audit records, formatted JSON payload metadata, and PayPal transaction/batch IDs.
+
+---
+
+## 8. Quick Start & Verification
 
 ### Prerequisites
 - Node.js v20+ (Node 24 supported)
@@ -137,6 +146,6 @@ npm start
 
 ---
 
-## 7. License
+## 9. License
 
 MIT License. Copyright (c) 2026 Quorum Contributors.

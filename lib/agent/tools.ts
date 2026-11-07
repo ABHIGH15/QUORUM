@@ -43,6 +43,7 @@ export interface GroupStateResult {
     amountCents: number;
     vendorId?: string;
   }>;
+  vetoedCatalogItemIds: string[];
 }
 
 /**
@@ -97,19 +98,29 @@ export async function getGroupState(pool: pg.Pool, groupId: string): Promise<Gro
   );
   const activeMembersCount = membersRes.rows[0]?.count || 0;
 
-  const proposalsRes = await pool.query(
-    `SELECT id, type, status, amount_cents, vendor_id FROM proposals 
-     WHERE group_id = $1 AND status NOT IN ('REJECTED', 'VETOED', 'BLOCKED', 'CANCELLED', 'EXPIRED')
+  const allProposalsRes = await pool.query(
+    `SELECT id, type, status, amount_cents, vendor_id, payload FROM proposals 
+     WHERE group_id = $1
      ORDER BY created_at DESC`,
     [groupId]
   );
-  const activeProposals = proposalsRes.rows.map((r) => ({
-    id: r.id,
-    type: r.type,
-    status: r.status,
-    amountCents: r.amount_cents,
-    vendorId: r.vendor_id,
-  }));
+  const activeProposals = allProposalsRes.rows
+    .filter((r) => !['REJECTED', 'VETOED', 'BLOCKED', 'CANCELLED', 'EXPIRED'].includes(r.status))
+    .map((r) => ({
+      id: r.id,
+      type: r.type,
+      status: r.status,
+      amountCents: r.amount_cents,
+      vendorId: r.vendor_id,
+    }));
+
+  const vetoedProposals = allProposalsRes.rows.filter((r) => r.status === 'VETOED');
+  const vetoedCatalogItemIds: string[] = vetoedProposals
+    .map((r) => {
+      const p = typeof r.payload === 'string' ? JSON.parse(r.payload) : r.payload || {};
+      return p.catalog_item_id || p.itemId;
+    })
+    .filter(Boolean);
 
   return {
     group,
@@ -120,6 +131,7 @@ export async function getGroupState(pool: pg.Pool, groupId: string): Promise<Gro
     },
     activeMembersCount,
     activeProposals,
+    vetoedCatalogItemIds,
   };
 }
 

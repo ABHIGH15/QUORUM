@@ -247,6 +247,48 @@ describe('AI Agent - Curated Catalog, Tools, & Adapt Loop', () => {
       expect(allProps.rows[1].amount_cents).toBe(14500);
     });
 
+    it('S2->S3 Handoff: When $145 item is vetoed, agent excludes it and proposes the $135 alternative', async () => {
+      // 1. Run agent initially -> proposes $145 OptiView HD
+      const run1 = await runAgent({
+        pool,
+        groupId: testGroupId,
+        query: 'projector',
+        now: '2026-11-06T12:00:00Z',
+        forceDeterministic: true,
+      });
+      expect(run1.success).toBe(true);
+      expect(run1.proposedItem?.priceCents).toBe(14500);
+
+      const propId = run1.proposedItem!.proposalId;
+
+      // 2. Member Elena casts VETO on this proposal (simulating S2)
+      await pool.query(
+        `UPDATE proposals SET status = 'VETOED' WHERE id = $1`,
+        [propId]
+      );
+      await pool.query(
+        `INSERT INTO ledger_events (group_id, type, actor_kind, actor_id, ref_type, ref_id, data)
+         VALUES ($1, 'VETO_CAST', 'MEMBER', '44444444-4444-4444-4444-444444444405', 'PROPOSAL', $2, '{"choice":"VETO"}')`,
+        [testGroupId, propId]
+      );
+
+      // 3. User asks the agent for another projector (simulating S2 -> S3 transition)
+      const run2 = await runAgent({
+        pool,
+        groupId: testGroupId,
+        query: 'projector',
+        now: '2026-11-06T12:05:00Z',
+        forceDeterministic: true,
+      });
+
+      // 4. Verify agent excluded the $145 vetoed item and proposed the $135 PocketCast Portable Mini Projector!
+      expect(run2.success).toBe(true);
+      expect(run2.proposedItem?.priceCents).toBe(13500);
+      expect(run2.proposedItem?.id).toBe('prod_proj_portable_lite');
+      expect(run2.proposedItem?.name).toContain('PocketCast');
+      expect(run2.finalMessage).toContain('PocketCast');
+    });
+
     it('Direct Compliant Request: Succeeds directly without adaptation when item is within limits', async () => {
       const result = await runAgent({
         pool,

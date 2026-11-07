@@ -86,21 +86,25 @@ export async function runAgent(params: RunAgentParams): Promise<AgentRunResult> 
 
   // 1. Fetch group state & active policy rules
   const state = await getGroupState(pool, groupId);
+  const vetoedIds = new Set(state.vetoedCatalogItemIds || []);
+
   stepCount++;
   steps.push({
     step: stepCount,
     action: 'EVALUATE',
-    detail: `Retrieved group state: Budget $${((state.policy?.budgetCents || 0) / 100).toFixed(2)}, Cap $${((state.policy?.hardCapCents || 0) / 100).toFixed(2)}, Available $${(state.funds.availableCents / 100).toFixed(2)}`,
+    detail: `Retrieved group state: Budget $${((state.policy?.budgetCents || 0) / 100).toFixed(2)}, Cap $${((state.policy?.hardCapCents || 0) / 100).toFixed(2)}, Available $${(state.funds.availableCents / 100).toFixed(2)}${vetoedIds.size > 0 ? ` (${vetoedIds.size} vetoed items excluded)` : ''}`,
     data: state,
   });
 
-  // 2. Initial catalog search for query
-  const searchResults = searchOptions({ query });
+  // 2. Initial catalog search for query (excluding items previously vetoed by the group)
+  const allSearchResults = searchOptions({ query });
+  const searchResults = allSearchResults.filter((i) => !vetoedIds.has(i.id));
+
   stepCount++;
   steps.push({
     step: stepCount,
     action: 'SEARCH',
-    detail: `Found ${searchResults.length} items matching query '${query}'`,
+    detail: `Found ${searchResults.length} items matching query '${query}'${vetoedIds.size > 0 ? ` (filtered out ${allSearchResults.length - searchResults.length} vetoed)` : ''}`,
     data: searchResults.map((i) => ({ id: i.id, name: i.name, price: `$${(i.priceCents / 100).toFixed(2)}` })),
   });
 
@@ -149,17 +153,17 @@ export async function runAgent(params: RunAgentParams): Promise<AgentRunResult> 
       },
     });
 
-    // Adapt step: Re-query catalog with strict price ceiling from Guard
+    // Adapt step: Re-query catalog with strict price ceiling from Guard, excluding already vetoed items
     const compliantOptions = searchOptions({
       query,
       maxPriceCents: maxAllowed,
-    });
+    }).filter((i) => !vetoedIds.has(i.id));
 
     stepCount++;
     steps.push({
       step: stepCount,
       action: 'ADAPT',
-      detail: `Adapting to Quorum Guard feedback: re-searching '${query}' with max_price = $${(maxAllowed / 100).toFixed(2)}. Found ${compliantOptions.length} compliant alternatives.`,
+      detail: `Adapting to Quorum Guard feedback: re-searching '${query}' with max_price = $${(maxAllowed / 100).toFixed(2)}. Found ${compliantOptions.length} compliant alternatives${vetoedIds.size > 0 ? ` (excluded ${vetoedIds.size} vetoed)` : ''}.`,
       data: compliantOptions.map((i) => ({ id: i.id, name: i.name, price: `$${(i.priceCents / 100).toFixed(2)}` })),
     });
 
@@ -183,11 +187,15 @@ export async function runAgent(params: RunAgentParams): Promise<AgentRunResult> 
 
     // Attempt 2: Propose the compliant alternative
     stepCount++;
+    const rationale = vetoedIds.size > 0
+      ? `Compliant alternative selected after group vetoed previous proposal and Guard cap of $${(maxAllowed / 100).toFixed(2)} was applied.`
+      : `Compliant alternative selected after Quorum Guard blocked ${allSearchResults[0]?.name || 'initial choice'} for exceeding spending limits.`;
+
     proposalResult = await createProposal({
       pool,
       groupId,
       itemId: selectedItem.id,
-      rationale: `Compliant alternative selected after Quorum Guard blocked ${searchResults[0].name} for exceeding spending limits.`,
+      rationale,
       now,
     });
   }
@@ -206,9 +214,14 @@ export async function runAgent(params: RunAgentParams): Promise<AgentRunResult> 
       },
     });
 
-    let finalMessage = adaptationOccurred
-      ? `I initially considered the ${searchResults[0].name} ($${(searchResults[0].priceCents / 100).toFixed(2)}), but Quorum Guard blocked it because it exceeds our group spending cap ($${((state.policy?.hardCapCents || 0) / 100).toFixed(2)}). I adapted and submitted a compliant alternative: **${selectedItem.name}** for **$${(selectedItem.priceCents / 100).toFixed(2)}**. It is now OPEN for member votes!`
-      : `I have created proposal for **${selectedItem.name}** ($${(selectedItem.priceCents / 100).toFixed(2)}). It is fully compliant with policy and is now OPEN for member voting.`;
+    let finalMessage = '';
+    if (vetoedIds.size > 0) {
+      finalMessage = `I noted that our group previously vetoed an alternative. Adapting to member preferences and Quorum Guard limits, I have selected the next compliant option: **${selectedItem.name}** for **$${(selectedItem.priceCents / 100).toFixed(2)}**. It is now OPEN for member votes!`;
+    } else if (adaptationOccurred) {
+      finalMessage = `I initially considered the ${allSearchResults[0].name} ($${(allSearchResults[0].priceCents / 100).toFixed(2)}), but Quorum Guard blocked it because it exceeds our group spending cap ($${((state.policy?.hardCapCents || 0) / 100).toFixed(2)}). I adapted and submitted a compliant alternative: **${selectedItem.name}** for **$${(selectedItem.priceCents / 100).toFixed(2)}**. It is now OPEN for member votes!`;
+    } else {
+      finalMessage = `I have created proposal for **${selectedItem.name}** ($${(selectedItem.priceCents / 100).toFixed(2)}). It is fully compliant with policy and is now OPEN for member voting.`;
+    }
 
     if (rateLimited) {
       finalMessage = `[⚡ Note: Free-tier Gemini API quota limit was encountered. Replaying verified deterministic Adapt Loop demonstration for judge evaluation.]\n\n` + finalMessage;

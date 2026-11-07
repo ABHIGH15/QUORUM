@@ -163,23 +163,25 @@ async function run() {
   );
   console.log(`✓ Curated vendor seeded (PayPal receiver: ${RECIPIENT_EMAIL})`);
 
-  // 5. Seed Ledger Funds ($480.00 pooled balance)
-  await pool.query(
-    `INSERT INTO ledger_events (group_id, type, actor_kind, amount_cents, data)
-     VALUES ($1, 'CONTRIBUTION_CAPTURED', 'SYSTEM', 48000, '{"note":"Initial pool funding"}')`,
-    [testGroupId]
-  );
+  // 5. Seed Ledger Funds ($480.00 pooled balance: 6 x $80.00 per member)
+  for (let i = 0; i < 6; i++) {
+    await pool.query(
+      `INSERT INTO ledger_events (group_id, type, actor_kind, actor_id, amount_cents, data)
+       VALUES ($1, 'CONTRIBUTION_CAPTURED', 'MEMBER', $2, 8000, '{"note":"Member pool funding"}')`,
+      [testGroupId, memberIds[i]]
+    );
+  }
   console.log('✓ Append-only ledger funded with $480.00 USD (6 x $80.00)');
 
-  // 6. Seed Proposal ($1.00 USD safe test amount)
-  const amountCents = 100;
+  // 6. Seed Proposal ($145.00 USD purchase matching S2/S3 OptiView HD)
+  const amountCents = 14500;
   await pool.query(
     `INSERT INTO proposals (
       id, group_id, type, status, created_by_kind, policy_version,
       vendor_id, category, amount_cents, payload, veto_ends_at
      ) VALUES (
       $1, $2, 'PURCHASE', 'EXECUTABLE', 'AGENT', 1,
-      $3, 'equipment', $4, '{"item":"Test Projector Lens"}', NOW() - INTERVAL '1 minute'
+      $3, 'equipment', $4, '{"item":"OptiView HD Classroom Projector"}', NOW() - INTERVAL '1 minute'
      )`,
     [testProposalId, testGroupId, testVendorId, amountCents]
   );
@@ -245,10 +247,31 @@ async function run() {
     console.log(`  [Event #${row.id}] ${row.type.padEnd(20)} | $${(row.amount_cents / 100).toFixed(2).padStart(6)} | ${row.actor_kind}`);
   }
 
+  // Calculate Funds After
+  const calcRes = await pool.query(
+    `SELECT 
+       COALESCE(SUM(CASE WHEN type = 'CONTRIBUTION_CAPTURED' THEN amount_cents ELSE 0 END), 0)::bigint as captured,
+       COALESCE(SUM(CASE WHEN type = 'CONTRIBUTION_REFUNDED' THEN amount_cents ELSE 0 END), 0)::bigint as refunded,
+       COALESCE(SUM(CASE WHEN type = 'PAYOUT_SUCCEEDED' THEN amount_cents ELSE 0 END), 0)::bigint as paid,
+       COALESCE(SUM(CASE WHEN type = 'FUNDS_RESERVED' THEN amount_cents ELSE 0 END), 0)::bigint as reserved,
+       COALESCE(SUM(CASE WHEN type = 'FUNDS_RELEASED' THEN amount_cents ELSE 0 END), 0)::bigint as released
+     FROM ledger_events WHERE group_id = $1`,
+    [testGroupId]
+  );
+  const calc = calcRes.rows[0];
+  const netReserved = Math.max(0, parseInt(calc.reserved, 10) - parseInt(calc.released, 10));
+  const availableCents = parseInt(calc.captured, 10) - parseInt(calc.refunded, 10) - parseInt(calc.paid, 10) - netReserved;
+
+  console.log('\n• Funds Breakdown After $145.00 Purchase:');
+  console.log(`  - Total Captured: $${(parseInt(calc.captured, 10) / 100).toFixed(2)}`);
+  console.log(`  - Reserved / Paid: $${((netReserved + parseInt(calc.paid, 10)) / 100).toFixed(2)}`);
+  console.log(`  - AVAILABLE BALANCE REMAINING: $${(availableCents / 100).toFixed(2)} (Expected: $335.00)`);
+
   console.log('\n=============================================================');
   console.log('🎉 REAL DATABASE PAYOUT TRANSACTION VERIFIED SUCCESSFULLY!');
   console.log(`• Batch ID: ${result.paypalBatchId}`);
   console.log(`• Sender Batch ID: ${result.senderBatchId}`);
+  console.log(`• Available Funds: $${(availableCents / 100).toFixed(2)}`);
   console.log('=============================================================');
   process.exit(0);
 }

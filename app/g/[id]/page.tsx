@@ -163,6 +163,20 @@ export default function WorkspacePage({ params }: { params: { id: string } }) {
       const data = await res.json();
       setState(data);
       setError(null);
+
+      // Support deep-linking to Why audit modal (e.g. ?why=blocked or ?why=<proposalId>)
+      if (typeof window !== 'undefined') {
+        const urlParams = new URLSearchParams(window.location.search);
+        const whyParam = urlParams.get('why');
+        if (whyParam) {
+          const target = whyParam === 'blocked'
+            ? data.proposals?.find((p: any) => p.status === 'BLOCKED')
+            : data.proposals?.find((p: any) => p.id === whyParam);
+          if (target) {
+            setSelectedWhyProposal(target);
+          }
+        }
+      }
     } catch (err: any) {
       console.error('[Fetch State Error]', err);
       setError(err.message || 'Unable to connect to group state endpoint');

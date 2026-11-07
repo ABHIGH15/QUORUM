@@ -343,5 +343,7 @@ export async function runGeminiAgent(params: GeminiAgentRunParams): Promise<Agen
     } : undefined,
     steps,
     adaptationOccurred,
+    engine: 'LIVE_GEMINI',
+    model,
   };
 }

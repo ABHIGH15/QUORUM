@@ -124,6 +124,8 @@ describe('Quorum API Route Handlers', () => {
     expect(chatData.adaptationOccurred).toBe(true);
     expect(chatData.proposedItem.priceCents).toBe(14500); // $145.00 compliant OptiView HD
     expect(chatData.steps.length).toBeGreaterThan(0);
+    expect(chatData.engine).toBeDefined();
+    expect(['LIVE_GEMINI', 'DETERMINISTIC_REPLAY']).toContain(chatData.engine);
   });
 
   it('POST /api/proposals/[id]/vote: Casts votes, transitions to VETO_WINDOW, and supports veto', async () => {

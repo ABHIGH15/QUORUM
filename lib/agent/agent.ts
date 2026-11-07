@@ -41,6 +41,9 @@ export interface AgentRunResult {
   };
   steps: AgentExecutionStep[];
   adaptationOccurred: boolean;
+  engine?: 'LIVE_GEMINI' | 'DETERMINISTIC_REPLAY';
+  model?: string;
+  rateLimited?: boolean;
 }
 
 export interface RunAgentParams {
@@ -108,6 +111,9 @@ export async function runAgent(params: RunAgentParams): Promise<AgentRunResult> 
       finalMessage: `No items found matching '${query}' in the curated catalog.`,
       steps,
       adaptationOccurred: false,
+      engine: 'DETERMINISTIC_REPLAY',
+      model: GEMINI_MODEL,
+      rateLimited,
     };
   }
 
@@ -164,6 +170,9 @@ export async function runAgent(params: RunAgentParams): Promise<AgentRunResult> 
         finalMessage: `Quorum Guard blocked ${selectedItem.name} ($${(selectedItem.priceCents / 100).toFixed(2)}) due to policy limit (${proposalResult.guardResult.reasonCodes.join(', ')}). No compliant alternatives found under $${(maxAllowed / 100).toFixed(2)}.`,
         steps,
         adaptationOccurred: true,
+        engine: 'DETERMINISTIC_REPLAY',
+        model: GEMINI_MODEL,
+        rateLimited,
       };
     }
 
@@ -217,6 +226,9 @@ export async function runAgent(params: RunAgentParams): Promise<AgentRunResult> 
       },
       steps,
       adaptationOccurred,
+      engine: 'DETERMINISTIC_REPLAY',
+      model: GEMINI_MODEL,
+      rateLimited,
     };
   }
 
@@ -226,5 +238,8 @@ export async function runAgent(params: RunAgentParams): Promise<AgentRunResult> 
     finalMessage: `Could not create a compliant proposal: ${proposalResult.guardResult.reasonCodes.join(', ')}.`,
     steps,
     adaptationOccurred,
+    engine: 'DETERMINISTIC_REPLAY',
+    model: GEMINI_MODEL,
+    rateLimited,
   };
 }

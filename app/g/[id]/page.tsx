@@ -2,6 +2,8 @@
 
 import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import Link from 'next/link';
+import AgentPanel from '@/components/agent/AgentPanel';
+import LedgerGrid from '@/components/ledger/LedgerGrid';
 import {
   ShieldCheck,
   ShieldAlert,
@@ -485,10 +487,10 @@ export default function WorkspacePage({ params }: { params: { id: string } }) {
           </div>
         ) : (
           <div className="space-y-6">
-            {/* Top Workspace Grid */}
+            {/* Top Workspace Grid: 3-Column on Desktop (Policy/Budget, Proposals Feed, AI Agent) */}
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-              {/* LEFT COLUMN: Policy & Budget & Funding (col-span-12 lg:col-span-4 space-y-6) */}
-              <div className="col-span-12 lg:col-span-4 space-y-6">
+              {/* LEFT COLUMN: Policy & Budget & Funding (col-span-12 lg:col-span-4 xl:col-span-3 space-y-6) */}
+              <div className="col-span-12 lg:col-span-4 xl:col-span-3 space-y-6">
                 {/* Policy Card (Rendered directly from Policy JSON) */}
                 <div className="bg-white rounded-2xl p-5 border border-[#e4e2dd] shadow-sm">
                   <div className="flex items-center justify-between mb-3 pb-2 border-b border-slate-100">
@@ -642,8 +644,8 @@ export default function WorkspacePage({ params }: { params: { id: string } }) {
                 </div>
               </div>
 
-              {/* CENTER COLUMN: Proposals Feed (col-span-12 lg:col-span-8 space-y-4) */}
-              <div className="col-span-12 lg:col-span-8 space-y-4">
+              {/* CENTER COLUMN: Proposals Feed (col-span-12 lg:col-span-8 xl:col-span-5 space-y-4) */}
+              <div className="col-span-12 lg:col-span-8 xl:col-span-5 space-y-4">
                 <div className="flex items-center justify-between mb-1">
                   <div>
                     <h2 className="font-serif text-2xl font-bold tracking-tight text-slate-900">
@@ -1002,67 +1004,22 @@ export default function WorkspacePage({ params }: { params: { id: string } }) {
                   </div>
                 )}
               </div>
-            </div>
 
-            {/* Bottom Row: Ledger Preview (Skeleton for Step D) */}
-            <div className="bg-white rounded-2xl p-5 border border-[#e4e2dd] shadow-sm">
-              <div className="flex items-center justify-between mb-3 pb-2 border-b border-slate-100">
-                <div className="flex items-center gap-2">
-                  <Activity className="w-4 h-4 text-[#064e3b]" />
-                  <h2 className="font-serif text-base font-bold text-slate-900">
-                    Financial & Governance Ledger (Source of Truth)
-                  </h2>
-                </div>
-                <span className="text-[10px] font-mono px-2 py-0.5 bg-slate-100 text-slate-700 rounded border border-slate-200">
-                  {state?.ledger?.length || 0} Events Logged
-                </span>
-              </div>
-
-              <div className="overflow-x-auto">
-                <table className="w-full text-left text-xs font-mono">
-                  <thead>
-                    <tr className="border-b border-slate-200 text-slate-500 text-[10px] uppercase">
-                      <th className="py-2 pr-3 font-semibold">Event ID</th>
-                      <th className="py-2 pr-3 font-semibold">Type</th>
-                      <th className="py-2 pr-3 font-semibold">Actor</th>
-                      <th className="py-2 pr-3 font-semibold">Amount</th>
-                      <th className="py-2 pr-3 font-semibold">Details</th>
-                      <th className="py-2 font-semibold">Timestamp</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100 text-slate-800">
-                    {(state?.ledger || []).slice(0, 8).map((evt: any) => (
-                      <tr key={evt.id} className="hover:bg-slate-50 transition">
-                        <td className="py-2 pr-3 text-slate-400">#{evt.id}</td>
-                        <td className="py-2 pr-3 font-semibold text-slate-900">
-                          <span
-                            className={`px-1.5 py-0.5 rounded text-[10px] ${
-                              evt.type.includes('CAPTURED')
-                                ? 'bg-emerald-50 text-emerald-800'
-                                : evt.type.includes('PAYOUT')
-                                ? 'bg-blue-50 text-blue-800'
-                                : 'bg-slate-100 text-slate-700'
-                            }`}
-                          >
-                            {evt.type}
-                          </span>
-                        </td>
-                        <td className="py-2 pr-3 text-slate-600">{evt.actor_kind}</td>
-                        <td className="py-2 pr-3 font-semibold">
-                          {evt.amount_cents ? `$${(evt.amount_cents / 100).toFixed(2)}` : '—'}
-                        </td>
-                        <td className="py-2 pr-3 text-slate-500 truncate max-w-xs">
-                          {JSON.stringify(evt.data || {})}
-                        </td>
-                        <td className="py-2 text-slate-400 text-[10px]">
-                          {new Date(evt.created_at).toLocaleTimeString()}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+              {/* RIGHT COLUMN: AI Purchasing Agent Panel (col-span-12 lg:col-span-12 xl:col-span-4) */}
+              <div className="col-span-12 lg:col-span-12 xl:col-span-4">
+                <AgentPanel
+                  groupId={groupId}
+                  currentMemberId={currentMemberId}
+                  onProposalCreated={fetchState}
+                />
               </div>
             </div>
+
+            {/* Bottom Row: AG Grid Interactive Audit Ledger (Milestone D) */}
+            <LedgerGrid
+              ledger={state?.ledger || []}
+              currency={state?.group?.currency || 'USD'}
+            />
 
             {/* Footer Demo Tools & Shortcuts */}
             <footer className="pt-6 pb-12 border-t border-slate-200 text-xs text-slate-500 space-y-4">

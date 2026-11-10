@@ -6,7 +6,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import pg from 'pg';
 import { createTestDb } from '../lib/db/test-db';
 import { CURATED_CATALOG } from '../lib/agent/catalog';
-import { searchOptions, compareOptions, createProposal, explainDecision } from '../lib/agent/tools';
+import { searchOptions, compareOptions, createProposal, explainDecision, checkProposal } from '../lib/agent/tools';
 import { runAgent } from '../lib/agent/agent';
 
 describe('AI Agent - Curated Catalog, Tools, & Adapt Loop', () => {
@@ -209,6 +209,98 @@ describe('AI Agent - Curated Catalog, Tools, & Adapt Loop', () => {
       expect(explanation.found).toBe(true);
       expect(explanation.decision).toBe('NEEDS_VOTES'); // Needs votes in VOTING/PROPOSAL
       expect(explanation.numbers?.votesRequired).toBe(4);
+    });
+
+    it('Tool: compareOptions explicitly shows votesRequired per option and flags unanimity requirement (§1a)', () => {
+      const items = CURATED_CATALOG.filter((i) => i.id.startsWith('prod_proj'));
+      const comparisons = compareOptions(items, {
+        hardCapCents: 20000,
+        unanimousAboveCents: 15000,
+        approvalTiers: [{ max_cents: 6000, votes_required: 2 }, { max_cents: 15000, votes_required: 4 }],
+        allowedCategories: ['equipment'],
+        allowedVendors: [testVendorId],
+        availableCents: 48000,
+        totalEligibleVoters: 6,
+      });
+
+      const opt180 = comparisons.find((c) => c.item.priceCents === 18000);
+      expect(opt180?.votesRequired).toBe(6);
+      expect(opt180?.requiresUnanimity).toBe(true);
+
+      const opt145 = comparisons.find((c) => c.item.priceCents === 14500);
+      expect(opt145?.votesRequired).toBe(4);
+      expect(opt145?.requiresUnanimity).toBe(false);
+
+      const opt135 = comparisons.find((c) => c.item.priceCents === 13500);
+      expect(opt135?.votesRequired).toBe(4);
+      expect(opt135?.requiresUnanimity).toBe(false);
+    });
+
+    it('Tool: checkProposal dry-runs Quorum Guard without inserting proposals or decisions into database (§1a)', async () => {
+      // 1. Dry run on $350 item (over cap)
+      const dryRunBlocked = await checkProposal({
+        pool,
+        groupId: testGroupId,
+        itemId: 'prod_proj_pro_4k', // $350.00
+      });
+      expect(dryRunBlocked.guardDecision).toBe('BLOCKED');
+      expect(dryRunBlocked.reasonCodes).toContain('HARD_CAP_EXCEEDED');
+      expect(dryRunBlocked.maxAllowedAmountCents).toBe(20000);
+
+      // 2. Dry run on $145 item (compliant, standard tier)
+      const dryRunAllowed = await checkProposal({
+        pool,
+        groupId: testGroupId,
+        itemId: 'prod_proj_hd_standard', // $145.00
+      });
+      expect(dryRunAllowed.guardDecision).toBe('ALLOWED');
+      expect(dryRunAllowed.votesRequired).toBe(4);
+      expect(dryRunAllowed.requiresUnanimity).toBe(false);
+
+      // 3. Dry run on $180 item (compliant, unanimous tier)
+      const dryRunUnanimous = await checkProposal({
+        pool,
+        groupId: testGroupId,
+        itemId: 'prod_proj_hd_executive', // $180.00
+      });
+      expect(dryRunUnanimous.guardDecision).toBe('ALLOWED');
+      expect(dryRunUnanimous.votesRequired).toBe(6);
+      expect(dryRunUnanimous.requiresUnanimity).toBe(true);
+
+      // Verify ZERO proposals were inserted into the database by checkProposal
+      const propCountRes = await pool.query(`SELECT COUNT(*)::int as count FROM proposals WHERE group_id = $1`, [testGroupId]);
+      expect(propCountRes.rows[0].count).toBe(0);
+
+      // Verify ZERO guard_decisions were inserted into the database by checkProposal
+      const decCountRes = await pool.query(`SELECT COUNT(*)::int as count FROM guard_decisions`);
+      expect(decCountRes.rows[0].count).toBe(0);
+    });
+
+    it('createProposal deduplicates BLOCKED proposals (records each blocked item at most once) (§1c)', async () => {
+      // Call createProposal twice for the $350 projector
+      const res1 = await createProposal({
+        pool,
+        groupId: testGroupId,
+        itemId: 'prod_proj_pro_4k',
+        rationale: 'First attempt',
+      });
+      expect(res1.status).toBe('BLOCKED');
+
+      const res2 = await createProposal({
+        pool,
+        groupId: testGroupId,
+        itemId: 'prod_proj_pro_4k',
+        rationale: 'Second attempt',
+      });
+      expect(res2.status).toBe('BLOCKED');
+      expect(res2.proposalId).toBe(res1.proposalId); // Reuses existing proposal ID!
+
+      // Check DB: exactly ONE blocked proposal row
+      const propRows = await pool.query(
+        `SELECT id, status, amount_cents FROM proposals WHERE group_id = $1 AND status = 'BLOCKED'`,
+        [testGroupId]
+      );
+      expect(propRows.rows).toHaveLength(1);
     });
   });
 

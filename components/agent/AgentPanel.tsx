@@ -48,9 +48,9 @@ interface AgentPanelProps {
 
 const SAMPLE_PROMPTS = [
   {
-    label: '🎬 Movie Night (S1/S2 Adapt Loop)',
+    label: '🎬 Movie Night (Autonomous Adapt Loop)',
     query: 'Find a 4K projector for movie night',
-    desc: 'Demonstrates $350 item blocked by $200 cap, then adapts to $145 OptiView HD',
+    desc: 'Demonstrates $350 item blocked by $200 cap, then adapts autonomously to $145 OptiView HD',
   },
   {
     label: '🔊 Audio Upgrade',
@@ -176,24 +176,24 @@ export default function AgentPanel({ groupId, currentMemberId, onProposalCreated
           <div>
             {lastResult?.engine === 'LIVE_GEMINI' ? (
               <span
-                title="Executed via live Google Gemini API (gemini-3.8-flash) with structured function calling"
+                title={`Executed via live Google Gemini API (${lastResult.model || 'Flash'}) with structured function calling`}
                 className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-mono font-semibold bg-emerald-100 text-emerald-900 border border-emerald-300"
               >
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-600 animate-ping" />
-                Live Gemini (3.8-flash)
+                Live Gemini ({lastResult.model || 'Flash'})
               </span>
             ) : lastResult?.engine === 'DETERMINISTIC_REPLAY' ? (
               <span
-                title="Deterministic Adapt Loop verification trace (Rate limit safe mode)"
+                title="Runs real tools, catalog search, and Quorum Guard via rule-based fallback when Gemini API is unavailable or rate-limited"
                 className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-mono font-semibold bg-amber-50 text-amber-900 border border-amber-300"
               >
                 <Sparkles className="w-3 h-3 text-amber-600" />
-                Replay Trace (Quota Safe)
+                Rule-based fallback (Gemini unavailable)
               </span>
             ) : (
               <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-mono text-slate-600 bg-slate-100 border border-slate-200">
                 <Sparkles className="w-3 h-3 text-emerald-700" />
-                Gemini 3.8 Flash Ready
+                Gemini Flash Ready
               </span>
             )}
           </div>

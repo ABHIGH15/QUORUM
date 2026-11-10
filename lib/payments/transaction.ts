@@ -24,6 +24,7 @@ import {
   DefinitePaymentFailure,
   AmbiguousPaymentFailure,
 } from './types';
+import { PayoutAdapter } from './adapters/payout-adapter';
 
 export interface ExecuteProposalPaymentParams {
   groupId: string;
@@ -53,12 +54,20 @@ export async function recordOutcome(params: RecordOutcomeParams): Promise<void> 
 
   await withTransaction(pool, async (client) => {
     if (outcome.status === 'SUCCEEDED') {
-      await client.query(
+      // Idempotency (§8.4): Atomically update payment only if not already SUCCEEDED
+      const updateRes = await client.query(
         `UPDATE payments 
          SET status = 'SUCCEEDED', paypal_batch_id = $1, paypal_item_id = $2, updated_at = NOW() 
-         WHERE id = $3`,
+         WHERE id = $3 AND status != 'SUCCEEDED'
+         RETURNING id`,
         [outcome.batchId, outcome.itemId || null, paymentId]
       );
+
+      // If already SUCCEEDED (e.g. concurrent webhook or reconcile), skip duplicate ledger entries
+      if (updateRes.rows.length === 0) {
+        return;
+      }
+
       await client.query(
         `INSERT INTO ledger_events (group_id, type, actor_kind, ref_type, ref_id, amount_cents, data)
          VALUES ($1, 'PAYOUT_SUCCEEDED', 'PAYPAL', 'PAYMENT', $2, $3, $4)`,
@@ -92,12 +101,18 @@ export async function recordOutcome(params: RecordOutcomeParams): Promise<void> 
         [proposalId]
       );
     } else if (outcome.status === 'PENDING') {
-      await client.query(
+      const updateRes = await client.query(
         `UPDATE payments 
          SET status = 'PENDING', paypal_batch_id = $1, paypal_item_id = $2, updated_at = NOW() 
-         WHERE id = $3`,
+         WHERE id = $3 AND status = 'CREATED'
+         RETURNING id`,
         [outcome.batchId, outcome.itemId || null, paymentId]
       );
+
+      if (updateRes.rows.length === 0) {
+        return;
+      }
+
       await client.query(
         `INSERT INTO ledger_events (group_id, type, actor_kind, ref_type, ref_id, amount_cents, data)
          VALUES ($1, 'PAYOUT_SUBMITTED', 'SYSTEM', 'PAYMENT', $2, $3, $4)`,
@@ -112,12 +127,18 @@ export async function recordOutcome(params: RecordOutcomeParams): Promise<void> 
         ]
       );
     } else if (outcome.status === 'UNCLAIMED') {
-      await client.query(
+      const updateRes = await client.query(
         `UPDATE payments 
          SET status = 'UNCLAIMED', paypal_batch_id = $1, paypal_item_id = $2, updated_at = NOW() 
-         WHERE id = $3`,
+         WHERE id = $3 AND status IN ('CREATED', 'PENDING')
+         RETURNING id`,
         [outcome.batchId, outcome.itemId || null, paymentId]
       );
+
+      if (updateRes.rows.length === 0) {
+        return;
+      }
+
       await client.query(
         `INSERT INTO ledger_events (group_id, type, actor_kind, ref_type, ref_id, amount_cents, data)
          VALUES ($1, 'PAYOUT_UNCLAIMED', 'SYSTEM', 'PAYMENT', $2, $3, $4)`,
@@ -132,10 +153,17 @@ export async function recordOutcome(params: RecordOutcomeParams): Promise<void> 
         ]
       );
     } else if (outcome.status === 'FAILED') {
-      await client.query(
-        `UPDATE payments SET status = 'FAILED', error_code = $1, updated_at = NOW() WHERE id = $2`,
+      const updateRes = await client.query(
+        `UPDATE payments SET status = 'FAILED', error_code = $1, updated_at = NOW() 
+         WHERE id = $2 AND status NOT IN ('FAILED', 'SUCCEEDED')
+         RETURNING id`,
         [errorCode || 'PAYMENT_FAILED', paymentId]
       );
+
+      if (updateRes.rows.length === 0) {
+        return;
+      }
+
       await client.query(
         `INSERT INTO ledger_events (group_id, type, actor_kind, ref_type, ref_id, amount_cents, data)
          VALUES ($1, 'FUNDS_RELEASED', 'SYSTEM', 'PAYMENT', $2, $3, $4)`,
@@ -147,6 +175,125 @@ export async function recordOutcome(params: RecordOutcomeParams): Promise<void> 
       );
     }
   });
+}
+
+export interface ReconcilePendingPayoutsOptions {
+  groupId?: string;
+  adapter?: PayoutAdapter;
+}
+
+export interface ReconciledPayoutResult {
+  paymentId: string;
+  proposalId: string;
+  batchId: string;
+  previousStatus: string;
+  newStatus: 'SUCCEEDED' | 'FAILED' | 'UNCLAIMED' | 'PENDING';
+}
+
+/**
+ * Reconciles PENDING payouts with PayPal API (§8.4)
+ * Authoritatively queries PayPal GET /v1/payments/payouts/{batch_id} so proposals
+ * in EXECUTING state advance to EXECUTED without requiring external webhooks.
+ */
+export async function reconcilePendingPayouts(
+  pool: pg.Pool,
+  options: ReconcilePendingPayoutsOptions = {}
+): Promise<ReconciledPayoutResult[]> {
+  const { groupId, adapter = new PayoutAdapter() } = options;
+
+  let query = `
+    SELECT p.id as payment_id, p.group_id, p.proposal_id, p.amount_cents, p.paypal_batch_id, p.status
+    FROM payments p
+    JOIN proposals prop ON prop.id = p.proposal_id
+    WHERE p.status = 'PENDING' AND p.paypal_batch_id IS NOT NULL
+  `;
+  const params: any[] = [];
+  if (groupId) {
+    query += ` AND p.group_id = $1`;
+    params.push(groupId);
+  }
+
+  const res = await pool.query(query, params);
+  const reconciled: ReconciledPayoutResult[] = [];
+  if (res.rows.length > 0) {
+    console.log(`[reconcilePendingPayouts] Found ${res.rows.length} pending payments to reconcile.`);
+  }
+
+  for (const row of res.rows) {
+    try {
+      const statusInfo = await adapter.checkPayoutBatchStatus(row.paypal_batch_id);
+      console.log(`[reconcilePendingPayouts] Batch ${row.paypal_batch_id} -> batchStatus=${statusInfo.batchStatus}, itemStatus=${statusInfo.itemStatus}, isSucceeded=${statusInfo.isSucceeded}`);
+
+      if (statusInfo.isSucceeded) {
+        await recordOutcome({
+          pool,
+          groupId: row.group_id,
+          proposalId: row.proposal_id,
+          paymentId: row.payment_id,
+          proposalAmountCents: row.amount_cents,
+          outcome: {
+            status: 'SUCCEEDED',
+            batchId: row.paypal_batch_id,
+            itemId: statusInfo.itemId,
+            rawResponse: statusInfo.rawResponse,
+          },
+        });
+        reconciled.push({
+          paymentId: row.payment_id,
+          proposalId: row.proposal_id,
+          batchId: row.paypal_batch_id,
+          previousStatus: 'PENDING',
+          newStatus: 'SUCCEEDED',
+        });
+      } else if (statusInfo.isFailed) {
+        await recordOutcome({
+          pool,
+          groupId: row.group_id,
+          proposalId: row.proposal_id,
+          paymentId: row.payment_id,
+          proposalAmountCents: row.amount_cents,
+          outcome: {
+            status: 'FAILED',
+            batchId: row.paypal_batch_id,
+            rawResponse: statusInfo.rawResponse,
+          },
+          errorCode: statusInfo.errorCode || 'PAYOUT_DENIED',
+        });
+        reconciled.push({
+          paymentId: row.payment_id,
+          proposalId: row.proposal_id,
+          batchId: row.paypal_batch_id,
+          previousStatus: 'PENDING',
+          newStatus: 'FAILED',
+        });
+      } else if (statusInfo.isUnclaimed) {
+        await recordOutcome({
+          pool,
+          groupId: row.group_id,
+          proposalId: row.proposal_id,
+          paymentId: row.payment_id,
+          proposalAmountCents: row.amount_cents,
+          outcome: {
+            status: 'UNCLAIMED',
+            batchId: row.paypal_batch_id,
+            itemId: statusInfo.itemId,
+            rawResponse: statusInfo.rawResponse,
+          },
+        });
+        reconciled.push({
+          paymentId: row.payment_id,
+          proposalId: row.proposal_id,
+          batchId: row.paypal_batch_id,
+          previousStatus: 'PENDING',
+          newStatus: 'UNCLAIMED',
+        });
+      }
+    } catch (err: any) {
+      console.warn(`[Payout Reconciliation] Failed to check batch ${row.paypal_batch_id}: ${err.message}`);
+    }
+  }
+
+  return reconciled;
 }
 
 export async function executeProposalPayment(
@@ -171,6 +318,7 @@ export async function executeProposalPayment(
       if (!executorMemberId) {
         return {
           allowed: false,
+          code: 'NO_UNILATERAL_EXECUTION',
           error: 'Executor member ID is mandatory for execution (I7)',
         };
       }
@@ -216,7 +364,8 @@ export async function executeProposalPayment(
       if (propRow.status !== 'EXECUTABLE' && propRow.status !== 'EXECUTION_FAILED') {
         return {
           allowed: false,
-          error: `Proposal '${proposalId}' is not executable (current status: '${propRow.status}')`,
+          code: 'NO_UNILATERAL_EXECUTION',
+          error: `Proposal '${proposalId}' is not executable (current status: '${propRow.status}'). High-value expenditures must satisfy group approval thresholds and complete the mandatory veto window before execution.`,
         };
       }
 
@@ -243,6 +392,7 @@ export async function executeProposalPayment(
       if (executorRes.rows.length === 0) {
         return {
           allowed: false,
+          code: 'NO_UNILATERAL_EXECUTION',
           error: `Executor member '${executorMemberId}' not found in group '${groupId}'`,
         };
       }
@@ -250,13 +400,15 @@ export async function executeProposalPayment(
       if (executor.status !== 'ACTIVE') {
         return {
           allowed: false,
+          code: 'NO_UNILATERAL_EXECUTION',
           error: `Executor member '${executorMemberId}' is not ACTIVE (status: ${executor.status})`,
         };
       }
       if (!eligibleVoters.includes(executorMemberId)) {
         return {
           allowed: false,
-          error: `Executor member '${executorMemberId}' is not an active captured contributor`,
+          code: 'NO_UNILATERAL_EXECUTION',
+          error: `Executor member '${executorMemberId}' is not an active captured contributor. Only contributing members who funded the pool can trigger execution (I7).`,
         };
       }
 
@@ -453,6 +605,7 @@ export async function executeProposalPayment(
       success: false,
       phase: 'GUARD_BLOCKED',
       guardResult: preExecution.guardResult,
+      code: preExecution.code || 'NO_UNILATERAL_EXECUTION',
       error: preExecution.error,
     };
   }

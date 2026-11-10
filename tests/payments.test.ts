@@ -17,7 +17,8 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import pg from 'pg';
 import { createTestDb } from '../lib/db/test-db';
-import { executeProposalPayment, resumeCreatedPayments } from '../lib/payments/transaction';
+import { executeProposalPayment, resumeCreatedPayments, reconcilePendingPayouts } from '../lib/payments/transaction';
+import { processWebhookEvent } from '../lib/paypal/webhooks';
 import {
   VendorPaymentAdapter,
   PaymentExecutionParams,
@@ -625,5 +626,275 @@ describe('Payment Transaction - Core Execution & Concurrency', () => {
       [testGroupId]
     );
     expect(reservations.rows).toHaveLength(1);
+  });
+
+  it('reconciles PENDING payouts to SUCCEEDED and EXECUTED without requiring webhooks', async () => {
+    // 1. Submit payment that lands in PENDING (initial PayPal state)
+    const mockAdapter = new MockPayoutAdapter();
+    mockAdapter.returnStatus = 'PENDING';
+
+    const result = await executeProposalPayment({
+      groupId: testGroupId,
+      proposalId: testProposalId,
+      executorMemberId: memberAsha,
+      pool,
+      adapter: mockAdapter,
+      now: '2026-11-05T12:05:00Z',
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.phase).toBe('PAYMENT_SUBMITTED');
+
+    // Verify intermediate state: proposal EXECUTING, payment PENDING
+    const propCheck1 = await pool.query(`SELECT status FROM proposals WHERE id = $1`, [testProposalId]);
+    expect(propCheck1.rows[0].status).toBe('EXECUTING');
+
+    const paymentCheck1 = await pool.query(`SELECT status FROM payments WHERE id = $1`, [result.paymentId]);
+    expect(paymentCheck1.rows[0].status).toBe('PENDING');
+
+    // 2. Simulate authoritative PayPal check returning SUCCESS
+    const mockReconcileAdapter = {
+      checkPayoutBatchStatus: async (batchId: string) => ({
+        batchStatus: 'SUCCESS',
+        itemStatus: 'SUCCESS',
+        itemId: 'ITEM_CONFIRMED_999',
+        isSucceeded: true,
+        isFailed: false,
+        isUnclaimed: false,
+        rawResponse: { status: 'SUCCESS' },
+      }),
+    } as any;
+
+    const reconciled = await reconcilePendingPayouts(pool, {
+      groupId: testGroupId,
+      adapter: mockReconcileAdapter,
+    });
+
+    expect(reconciled).toHaveLength(1);
+    expect(reconciled[0].newStatus).toBe('SUCCEEDED');
+    expect(reconciled[0].proposalId).toBe(testProposalId);
+
+    // 3. Verify final state: proposal EXECUTED, payment SUCCEEDED
+    const propCheck2 = await pool.query(`SELECT status FROM proposals WHERE id = $1`, [testProposalId]);
+    expect(propCheck2.rows[0].status).toBe('EXECUTED');
+
+    const paymentCheck2 = await pool.query(`SELECT status FROM payments WHERE id = $1`, [result.paymentId]);
+    expect(paymentCheck2.rows[0].status).toBe('SUCCEEDED');
+
+    // Verify ledger has PAYOUT_SUCCEEDED and FUNDS_RELEASED
+    const ledger = await pool.query(
+      `SELECT type, amount_cents FROM ledger_events WHERE group_id = $1 ORDER BY id ASC`,
+      [testGroupId]
+    );
+    const types = ledger.rows.map((r) => r.type);
+    expect(types).toContain('FUNDS_RESERVED');
+    expect(types).toContain('PAYOUT_SUBMITTED');
+    expect(types).toContain('PAYOUT_SUCCEEDED');
+    expect(types).toContain('FUNDS_RELEASED');
+
+    // 4. Running reconcile again finds 0 pending
+    const secondPass = await reconcilePendingPayouts(pool, {
+      groupId: testGroupId,
+      adapter: mockReconcileAdapter,
+    });
+    expect(secondPass).toHaveLength(0);
+  });
+
+  describe('Idempotency & Double-Apply Protection: Reconcile vs Webhook', () => {
+    async function getLedgerBreakdown(groupId: string) {
+      const balanceQuery = await pool.query(
+        `SELECT
+          COALESCE(SUM(CASE WHEN type = 'CONTRIBUTION_CAPTURED' THEN amount_cents ELSE 0 END), 0)::bigint as captured,
+          COALESCE(SUM(CASE WHEN type = 'REFUND_ISSUED' THEN amount_cents ELSE 0 END), 0)::bigint as refunded,
+          COALESCE(SUM(CASE WHEN type = 'PAYOUT_SUCCEEDED' THEN amount_cents ELSE 0 END), 0)::bigint as paid,
+          COALESCE(SUM(CASE WHEN type = 'FUNDS_RESERVED' THEN amount_cents ELSE 0 END), 0)::bigint as reserved,
+          COALESCE(SUM(CASE WHEN type = 'FUNDS_RELEASED' THEN amount_cents ELSE 0 END), 0)::bigint as released
+         FROM ledger_events
+         WHERE group_id = $1`,
+        [groupId]
+      );
+      const b = balanceQuery.rows[0];
+      const netReserved = Math.max(0, parseInt(b.reserved, 10) - parseInt(b.released, 10));
+      const availableCents = parseInt(b.captured, 10) - parseInt(b.refunded, 10) - parseInt(b.paid, 10) - netReserved;
+      return {
+        capturedCents: parseInt(b.captured, 10),
+        refundedCents: parseInt(b.refunded, 10),
+        paidCents: parseInt(b.paid, 10),
+        reservedCents: netReserved,
+        availableCents,
+      };
+    }
+
+    const mockSuccessReconcileAdapter = {
+      checkPayoutBatchStatus: async (batchId: string) => ({
+        batchStatus: 'SUCCESS',
+        itemStatus: 'SUCCESS',
+        itemId: 'ITEM_ID_IDEMP_123',
+        isSucceeded: true,
+        isFailed: false,
+        isUnclaimed: false,
+        rawResponse: { status: 'SUCCESS' },
+      }),
+    } as any;
+
+    it('Reconcile then Webhook: exactly one PAYOUT_SUCCEEDED, one FUNDS_RELEASED, and available = $335', async () => {
+      // 1. Submit payment landing in PENDING
+      const mockAdapter = new MockPayoutAdapter();
+      mockAdapter.returnStatus = 'PENDING';
+      const exec = await executeProposalPayment({
+        groupId: testGroupId,
+        proposalId: testProposalId,
+        executorMemberId: memberAsha,
+        pool,
+        adapter: mockAdapter,
+        now: '2026-11-05T12:05:00Z',
+      });
+      expect(exec.success).toBe(true);
+
+      // 2. Authoritative Reconcile runs first
+      const reconciled = await reconcilePendingPayouts(pool, {
+        groupId: testGroupId,
+        adapter: mockSuccessReconcileAdapter,
+      });
+      expect(reconciled).toHaveLength(1);
+
+      // 3. Webhook arrives subsequently for the same batch
+      const webhookEvent = {
+        id: 'WH_EVT_REC_THEN_WH',
+        event_type: 'PAYMENT.PAYOUTSBATCH.SUCCESS',
+        resource: {
+          batch_header: {
+            payout_batch_id: exec.paypalBatchId,
+            sender_batch_id: exec.senderBatchId,
+          },
+        },
+      };
+      await processWebhookEvent({ pool, event: webhookEvent, verified: true });
+
+      // 4. Assert Ledger Events: exactly ONE PAYOUT_SUCCEEDED and ONE FUNDS_RELEASED
+      const eventsRes = await pool.query(
+        `SELECT type, amount_cents FROM ledger_events WHERE group_id = $1 ORDER BY id ASC`,
+        [testGroupId]
+      );
+      const types = eventsRes.rows.map((r) => r.type);
+      const payoutSuccessCount = types.filter((t) => t === 'PAYOUT_SUCCEEDED').length;
+      const fundsReleasedCount = types.filter((t) => t === 'FUNDS_RELEASED').length;
+
+      expect(payoutSuccessCount).toBe(1);
+      expect(fundsReleasedCount).toBe(1);
+
+      // 5. Balance verification: $480.00 - $145.00 = $335.00 (NOT $190.00)
+      const breakdown = await getLedgerBreakdown(testGroupId);
+      expect(breakdown.paidCents).toBe(14500);
+      expect(breakdown.reservedCents).toBe(0);
+      expect(breakdown.availableCents).toBe(33500);
+    });
+
+    it('Webhook then Reconcile: exactly one PAYOUT_SUCCEEDED, one FUNDS_RELEASED, and available = $335', async () => {
+      // 1. Submit payment landing in PENDING
+      const mockAdapter = new MockPayoutAdapter();
+      mockAdapter.returnStatus = 'PENDING';
+      const exec = await executeProposalPayment({
+        groupId: testGroupId,
+        proposalId: testProposalId,
+        executorMemberId: memberAsha,
+        pool,
+        adapter: mockAdapter,
+        now: '2026-11-05T12:05:00Z',
+      });
+      expect(exec.success).toBe(true);
+
+      // 2. Webhook arrives first
+      const webhookEvent = {
+        id: 'WH_EVT_WH_THEN_REC',
+        event_type: 'PAYMENT.PAYOUTSBATCH.SUCCESS',
+        resource: {
+          batch_header: {
+            payout_batch_id: exec.paypalBatchId,
+            sender_batch_id: exec.senderBatchId,
+          },
+        },
+      };
+      await processWebhookEvent({ pool, event: webhookEvent, verified: true });
+
+      // 3. Reconcile runs second
+      const reconciled = await reconcilePendingPayouts(pool, {
+        groupId: testGroupId,
+        adapter: mockSuccessReconcileAdapter,
+      });
+      // Reconcile finds 0 pending payments because webhook already transitioned payment to SUCCEEDED
+      expect(reconciled).toHaveLength(0);
+
+      // 4. Assert Ledger Events: exactly ONE PAYOUT_SUCCEEDED and ONE FUNDS_RELEASED
+      const eventsRes = await pool.query(
+        `SELECT type, amount_cents FROM ledger_events WHERE group_id = $1 ORDER BY id ASC`,
+        [testGroupId]
+      );
+      const types = eventsRes.rows.map((r) => r.type);
+      const payoutSuccessCount = types.filter((t) => t === 'PAYOUT_SUCCEEDED').length;
+      const fundsReleasedCount = types.filter((t) => t === 'FUNDS_RELEASED').length;
+
+      expect(payoutSuccessCount).toBe(1);
+      expect(fundsReleasedCount).toBe(1);
+
+      // 5. Balance verification: $480.00 - $145.00 = $335.00
+      const breakdown = await getLedgerBreakdown(testGroupId);
+      expect(breakdown.paidCents).toBe(14500);
+      expect(breakdown.reservedCents).toBe(0);
+      expect(breakdown.availableCents).toBe(33500);
+    });
+
+    it('Concurrent Reconcile and Webhook: exactly one PAYOUT_SUCCEEDED, one FUNDS_RELEASED, and available = $335', async () => {
+      // 1. Submit payment landing in PENDING
+      const mockAdapter = new MockPayoutAdapter();
+      mockAdapter.returnStatus = 'PENDING';
+      const exec = await executeProposalPayment({
+        groupId: testGroupId,
+        proposalId: testProposalId,
+        executorMemberId: memberAsha,
+        pool,
+        adapter: mockAdapter,
+        now: '2026-11-05T12:05:00Z',
+      });
+      expect(exec.success).toBe(true);
+
+      const webhookEvent = {
+        id: 'WH_EVT_CONCURRENT_1',
+        event_type: 'PAYMENT.PAYOUTSBATCH.SUCCESS',
+        resource: {
+          batch_header: {
+            payout_batch_id: exec.paypalBatchId,
+            sender_batch_id: exec.senderBatchId,
+          },
+        },
+      };
+
+      // 2. Launch Reconcile and Webhook concurrently
+      await Promise.all([
+        reconcilePendingPayouts(pool, {
+          groupId: testGroupId,
+          adapter: mockSuccessReconcileAdapter,
+        }),
+        processWebhookEvent({ pool, event: webhookEvent, verified: true }),
+      ]);
+
+      // 3. Assert Ledger Events: exactly ONE PAYOUT_SUCCEEDED and ONE FUNDS_RELEASED
+      const eventsRes = await pool.query(
+        `SELECT type, amount_cents FROM ledger_events WHERE group_id = $1 ORDER BY id ASC`,
+        [testGroupId]
+      );
+      const types = eventsRes.rows.map((r) => r.type);
+      const payoutSuccessCount = types.filter((t) => t === 'PAYOUT_SUCCEEDED').length;
+      const fundsReleasedCount = types.filter((t) => t === 'FUNDS_RELEASED').length;
+
+      expect(payoutSuccessCount).toBe(1);
+      expect(fundsReleasedCount).toBe(1);
+
+      // 4. Balance verification: $480.00 - $145.00 = $335.00
+      const breakdown = await getLedgerBreakdown(testGroupId);
+      expect(breakdown.paidCents).toBe(14500);
+      expect(breakdown.reservedCents).toBe(0);
+      expect(breakdown.availableCents).toBe(33500);
+    });
   });
 });

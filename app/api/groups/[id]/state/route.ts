@@ -1,4 +1,5 @@
 import { getPool } from '@/lib/db/pool';
+import { reconcilePendingPayouts } from '@/lib/payments/transaction';
 
 interface RouteContext {
   params: {
@@ -36,6 +37,25 @@ export async function GET(request: Request, context: RouteContext) {
       policy = polRes.rows[0]?.policy || null;
     }
 
+    // 2b. Lazy state synchronization:
+    // - Advance concluded veto windows to EXECUTABLE
+    // - Reconcile PENDING payouts with PayPal API (without relying on external webhooks)
+    await pool.query(
+      `UPDATE proposals
+       SET status = 'EXECUTABLE'
+       WHERE group_id = $1 AND status = 'VETO_WINDOW' AND veto_ends_at IS NOT NULL AND veto_ends_at <= NOW()`,
+      [groupId]
+    );
+
+    try {
+      const rec = await reconcilePendingPayouts(pool, { groupId });
+      if (rec.length > 0) {
+        console.log(`[State Lazy Reconcile] Reconciled ${rec.length} payouts:`, rec);
+      }
+    } catch (recErr: any) {
+      console.error('[State Lazy Reconcile Error]', recErr.message);
+    }
+
     // 3. Ledger Events (for AG Grid)
     const ledgerRes = await pool.query(
       `SELECT id, type, actor_kind, actor_id, ref_type, ref_id, amount_cents, data, created_at
@@ -60,14 +80,6 @@ export async function GET(request: Request, context: RouteContext) {
     const b = balanceQuery.rows[0];
     const netReserved = Math.max(0, parseInt(b.reserved, 10) - parseInt(b.released, 10));
     const availableCents = parseInt(b.captured, 10) - parseInt(b.refunded, 10) - parseInt(b.paid, 10) - netReserved;
-
-    // 4b. Lazy state synchronization: advance concluded veto windows to EXECUTABLE
-    await pool.query(
-      `UPDATE proposals
-       SET status = 'EXECUTABLE'
-       WHERE group_id = $1 AND status = 'VETO_WINDOW' AND veto_ends_at IS NOT NULL AND veto_ends_at <= NOW()`,
-      [groupId]
-    );
 
     // 5. Proposals
     const proposalsRes = await pool.query(
@@ -138,11 +150,20 @@ export async function GET(request: Request, context: RouteContext) {
       }
     }
 
-    // 6. Members
+    // 6. Funding Round
+    const roundRes = await pool.query(
+      `SELECT id, status, per_member_cents, min_contributors FROM funding_rounds WHERE group_id = $1 ORDER BY created_at DESC LIMIT 1`,
+      [groupId]
+    );
+    const fundingRound = roundRes.rows[0] || null;
+
+    // 7. Members with contribution status
     const membersRes = await pool.query(
-      `SELECT m.id as member_id, m.status, u.id as user_id, u.display_name, u.paypal_sandbox_email
+      `SELECT m.id as member_id, m.status, u.id as user_id, u.display_name, u.paypal_sandbox_email,
+              c.status as contribution_status, c.amount_cents as contribution_cents, c.capture_attempts
        FROM memberships m
        JOIN users u ON u.id = m.user_id
+       LEFT JOIN contributions c ON c.member_id = m.id
        WHERE m.group_id = $1
        ORDER BY u.display_name ASC`,
       [groupId]
@@ -151,6 +172,7 @@ export async function GET(request: Request, context: RouteContext) {
     return Response.json({
       group,
       policy,
+      fundingRound,
       funds: {
         capturedCents: parseInt(b.captured, 10),
         refundedCents: parseInt(b.refunded, 10),

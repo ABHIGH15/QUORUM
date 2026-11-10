@@ -51,7 +51,7 @@ if (!process.env.GEMINI_API_KEY) {
 
 async function run() {
   console.log('=============================================================');
-  console.log('      Quorum Live Gemini 3.8 Flash Agent & Adapt Loop        ');
+  console.log('      Quorum Live Gemini Flash Agent & Adapt Loop            ');
   console.log('=============================================================');
 
   const { pool } = createTestDb();

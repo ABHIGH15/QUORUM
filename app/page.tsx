@@ -152,6 +152,120 @@ export default function HomePage() {
         </div>
       </div>
 
+      {/* Try It in 60 Seconds: Judge Guided Quickstart */}
+      <div className="bg-gradient-to-br from-slate-900 to-slate-800 text-white rounded-2xl p-6 sm:p-8 mb-8 shadow-xl border border-slate-700/60">
+        <div className="flex flex-wrap items-center justify-between gap-3 mb-6 pb-4 border-b border-slate-700/80">
+          <div>
+            <div className="flex items-center gap-2 mb-1">
+              <span className="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-[10px] font-mono font-bold uppercase tracking-wider">
+                Judge Quickstart
+              </span>
+              <h2 className="text-xl font-bold font-serif text-white">
+                Try Quorum in 60 Seconds
+              </h2>
+            </div>
+            <p className="text-xs text-slate-300">
+              Run the complete governance loop from purchasing prompt to row-locked PayPal payout in five simple steps.
+            </p>
+          </div>
+          <button
+            onClick={async () => {
+              const ashaId = '20000000-0000-0000-0000-000000000001';
+              document.cookie = `quorum_member_id=${ashaId}; path=/; max-age=2592000`;
+              try {
+                await fetch('/api/auth/persona', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ memberId: ashaId }),
+                });
+              } catch {}
+              window.location.href = '/g/00000000-0000-0000-0000-000000000001';
+            }}
+            className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold text-xs rounded-xl transition shadow-xs cursor-pointer flex items-center gap-1.5"
+          >
+            <span>Launch Interactive Workspace</span>
+            <span>&rarr;</span>
+          </button>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
+          <div className="bg-slate-800/90 rounded-xl p-4 border border-slate-700 flex flex-col justify-between">
+            <div>
+              <div className="w-6 h-6 rounded-full bg-emerald-500/20 text-emerald-400 font-mono text-xs font-bold flex items-center justify-center mb-2 border border-emerald-500/30">
+                1
+              </div>
+              <h3 className="font-semibold text-sm text-white mb-1">Ask Agent</h3>
+              <p className="text-xs text-slate-300 leading-relaxed">
+                Click sample prompt <em>&ldquo;Movie Night&rdquo;</em> in the AI agent panel.
+              </p>
+            </div>
+            <div className="mt-3 pt-2 border-t border-slate-700/60 text-[11px] font-mono text-emerald-400">
+              Prompt &rarr; Search
+            </div>
+          </div>
+
+          <div className="bg-slate-800/90 rounded-xl p-4 border border-slate-700 flex flex-col justify-between">
+            <div>
+              <div className="w-6 h-6 rounded-full bg-emerald-500/20 text-emerald-400 font-mono text-xs font-bold flex items-center justify-center mb-2 border border-emerald-500/30">
+                2
+              </div>
+              <h3 className="font-semibold text-sm text-white mb-1">See Policy Block</h3>
+              <p className="text-xs text-slate-300 leading-relaxed">
+                $350 item blocked by $200 cap; agent adapts down to $145 OptiView HD.
+              </p>
+            </div>
+            <div className="mt-3 pt-2 border-t border-slate-700/60 text-[11px] font-mono text-rose-400">
+              Blocked &rarr; Adapted
+            </div>
+          </div>
+
+          <div className="bg-slate-800/90 rounded-xl p-4 border border-slate-700 flex flex-col justify-between">
+            <div>
+              <div className="w-6 h-6 rounded-full bg-emerald-500/20 text-emerald-400 font-mono text-xs font-bold flex items-center justify-center mb-2 border border-emerald-500/30">
+                3
+              </div>
+              <h3 className="font-semibold text-sm text-white mb-1">Approve as Members</h3>
+              <p className="text-xs text-slate-300 leading-relaxed">
+                Click <em>&ldquo;Demo Shortcut: 4 Approvals&rdquo;</em> to cast votes for Asha, Ben, Chloe, Dev.
+              </p>
+            </div>
+            <div className="mt-3 pt-2 border-t border-slate-700/60 text-[11px] font-mono text-amber-400">
+              4 of 4 Approvals
+            </div>
+          </div>
+
+          <div className="bg-slate-800/90 rounded-xl p-4 border border-slate-700 flex flex-col justify-between">
+            <div>
+              <div className="w-6 h-6 rounded-full bg-emerald-500/20 text-emerald-400 font-mono text-xs font-bold flex items-center justify-center mb-2 border border-emerald-500/30">
+                4
+              </div>
+              <h3 className="font-semibold text-sm text-white mb-1">Watch Veto Window</h3>
+              <p className="text-xs text-slate-300 leading-relaxed">
+                Live 2-minute countdown starts. Any member (e.g. Elena) can veto.
+              </p>
+            </div>
+            <div className="mt-3 pt-2 border-t border-slate-700/60 text-[11px] font-mono text-indigo-400">
+              02:00 Countdown
+            </div>
+          </div>
+
+          <div className="bg-slate-800/90 rounded-xl p-4 border border-slate-700 flex flex-col justify-between">
+            <div>
+              <div className="w-6 h-6 rounded-full bg-emerald-500/20 text-emerald-400 font-mono text-xs font-bold flex items-center justify-center mb-2 border border-emerald-500/30">
+                5
+              </div>
+              <h3 className="font-semibold text-sm text-white mb-1">Execute Payout</h3>
+              <p className="text-xs text-slate-300 leading-relaxed">
+                Click <em>&ldquo;Execute Payment&rdquo;</em>. Interactive row-lock reserves funds &amp; submits PayPal Payout.
+              </p>
+            </div>
+            <div className="mt-3 pt-2 border-t border-slate-700/60 text-[11px] font-mono text-emerald-400">
+              PayPal Batch ID
+            </div>
+          </div>
+        </div>
+      </div>
+
       {/* Grid of Core Architectural Subsystems */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
         <div className="bg-white rounded-xl p-5 border border-slate-200 shadow-sm flex flex-col justify-between">
@@ -159,7 +273,7 @@ export default function HomePage() {
             <div className="text-indigo-600 font-bold text-xs uppercase tracking-wider mb-1">Subsystem 1</div>
             <h3 className="text-base font-bold text-slate-900 mb-2">Quorum Guard Core</h3>
             <p className="text-slate-600 text-sm leading-relaxed mb-4">
-              100% pure deterministic evaluator (§6). Zero I/O, zero database access, and zero LLM calls. Governs approval thresholds, quorum requirements, and mandatory veto windows.
+              100% pure deterministic governance evaluator. Zero I/O, zero database access, and zero LLM calls. Enforces approval thresholds, quorum requirements, and mandatory veto windows.
             </p>
           </div>
           <div className="pt-3 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">

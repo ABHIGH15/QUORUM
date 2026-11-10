@@ -10,7 +10,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:gemini": "npx tsx scripts/test-agent-gemini.mjs",
-    "test:real-postgres": "npx tsx scripts/test-real-postgres.mjs"
+    "test:real-postgres": "npx tsx scripts/test-real-postgres.mjs",
+    "verify:scenarios": "npx tsx scripts/verify-scenarios.mjs"
   },
   "dependencies": {
     "ag-grid-community": "^36.3.0",

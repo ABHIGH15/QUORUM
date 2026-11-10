@@ -46,6 +46,7 @@ export class PayoutAdapter implements VendorPaymentAdapter {
     const timeoutId = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
       return await fetch(url, {
+        cache: 'no-store',
         ...options,
         signal: controller.signal,
       });
@@ -326,5 +327,60 @@ export class PayoutAdapter implements VendorPaymentAdapter {
       body.name || 'BUSINESS_ERROR',
       body
     );
+  }
+
+  /**
+   * Authoritative lookup of a PayPal payout batch status (§8.4)
+   * Used for webhook-independent payout reconciliation.
+   */
+  async checkPayoutBatchStatus(batchId: string): Promise<{
+    batchStatus: string;
+    itemStatus?: string;
+    itemId?: string;
+    isSucceeded: boolean;
+    isFailed: boolean;
+    isUnclaimed: boolean;
+    errorCode?: string;
+    rawResponse: any;
+  }> {
+    const token = await this.getAccessToken();
+    const res = await this.fetchWithTimeout(`${this.baseUrl}/v1/payments/payouts/${batchId}`, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(`Failed to check payout batch ${batchId} (HTTP ${res.status}): ${errText}`);
+    }
+
+    const data = await res.json();
+    const batchHeader = data.batch_header || {};
+    const batchStatus = batchHeader.batch_status;
+    const item = data.items?.[0] || {};
+    const itemStatus = item.transaction_status;
+
+    const isSucceeded = batchStatus === 'SUCCESS' || itemStatus === 'SUCCESS';
+    const isFailed =
+      batchStatus === 'DENIED' ||
+      batchStatus === 'CANCELED' ||
+      itemStatus === 'FAILED' ||
+      itemStatus === 'BLOCKED' ||
+      itemStatus === 'RETURNED';
+    const isUnclaimed = itemStatus === 'UNCLAIMED';
+
+    return {
+      batchStatus,
+      itemStatus,
+      itemId: item.payout_item_id,
+      isSucceeded,
+      isFailed,
+      isUnclaimed,
+      errorCode: item.errors?.name || batchHeader.errors?.name,
+      rawResponse: data,
+    };
   }
 }

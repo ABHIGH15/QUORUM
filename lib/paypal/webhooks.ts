@@ -158,37 +158,35 @@ export async function processWebhookEvent(params: {
     switch (eventType) {
       case 'PAYMENT.PAYOUTSBATCH.SUCCESS': {
         const batchId = resource.batch_header?.payout_batch_id;
-        if (batchId) {
-          const paymentRes = await client.query(
-            `SELECT id, group_id, proposal_id, amount_cents, status FROM payments 
-             WHERE paypal_batch_id = $1 OR sender_batch_id = $2`,
-            [batchId, resource.batch_header?.sender_batch_id || batchId]
+        const senderBatchId = resource.batch_header?.sender_batch_id;
+        if (batchId || senderBatchId) {
+          // Idempotent conditional update: only update and log ledger events if status was not already SUCCEEDED
+          const updateRes = await client.query(
+            `UPDATE payments 
+             SET status = 'SUCCEEDED', updated_at = NOW() 
+             WHERE (paypal_batch_id = $1 OR sender_batch_id = $2) AND status != 'SUCCEEDED'
+             RETURNING id, group_id, proposal_id, amount_cents`,
+            [batchId || null, senderBatchId || batchId]
           );
 
-          if (paymentRes.rows.length > 0) {
-            const p = paymentRes.rows[0];
-            if (p.status !== 'SUCCEEDED') {
-              await client.query(
-                `UPDATE payments SET status = 'SUCCEEDED', updated_at = NOW() WHERE id = $1`,
-                [p.id]
-              );
-              await client.query(
-                `INSERT INTO ledger_events (group_id, type, actor_kind, ref_type, ref_id, amount_cents, data)
-                 VALUES ($1, 'PAYOUT_SUCCEEDED', 'PAYPAL', 'PAYMENT', $2, $3, $4)`,
-                [p.group_id, p.id, p.amount_cents, JSON.stringify({ webhook_event_id: eventId, batch_id: batchId })]
-              );
-              // Release reservation so netReserved is zeroed out
-              await client.query(
-                `INSERT INTO ledger_events (group_id, type, actor_kind, ref_type, ref_id, amount_cents, data)
-                 VALUES ($1, 'FUNDS_RELEASED', 'SYSTEM', 'PAYMENT', $2, $3, $4)`,
-                [p.group_id, p.id, p.amount_cents, JSON.stringify({ reason: 'PAYOUT_SUCCEEDED', payment_id: p.id })]
-              );
-              await client.query(
-                `UPDATE proposals SET status = 'EXECUTED' WHERE id = $1`,
-                [p.proposal_id]
-              );
-              actionTaken = 'PAYMENT_SUCCEEDED_AND_PROPOSAL_EXECUTED';
-            }
+          if (updateRes.rows.length > 0) {
+            const p = updateRes.rows[0];
+            await client.query(
+              `INSERT INTO ledger_events (group_id, type, actor_kind, ref_type, ref_id, amount_cents, data)
+               VALUES ($1, 'PAYOUT_SUCCEEDED', 'PAYPAL', 'PAYMENT', $2, $3, $4)`,
+              [p.group_id, p.id, p.amount_cents, JSON.stringify({ webhook_event_id: eventId, batch_id: batchId })]
+            );
+            // Release reservation so netReserved is zeroed out
+            await client.query(
+              `INSERT INTO ledger_events (group_id, type, actor_kind, ref_type, ref_id, amount_cents, data)
+               VALUES ($1, 'FUNDS_RELEASED', 'SYSTEM', 'PAYMENT', $2, $3, $4)`,
+              [p.group_id, p.id, p.amount_cents, JSON.stringify({ reason: 'PAYOUT_SUCCEEDED', payment_id: p.id })]
+            );
+            await client.query(
+              `UPDATE proposals SET status = 'EXECUTED' WHERE id = $1`,
+              [p.proposal_id]
+            );
+            actionTaken = 'PAYMENT_SUCCEEDED_AND_PROPOSAL_EXECUTED';
           }
         }
         break;
@@ -196,19 +194,18 @@ export async function processWebhookEvent(params: {
 
       case 'PAYMENT.PAYOUTSBATCH.DENIED': {
         const batchId = resource.batch_header?.payout_batch_id;
-        if (batchId) {
-          const paymentRes = await client.query(
-            `SELECT id, group_id, proposal_id, amount_cents, status FROM payments 
-             WHERE paypal_batch_id = $1 OR sender_batch_id = $2`,
-            [batchId, resource.batch_header?.sender_batch_id || batchId]
+        const senderBatchId = resource.batch_header?.sender_batch_id;
+        if (batchId || senderBatchId) {
+          const updateRes = await client.query(
+            `UPDATE payments 
+             SET status = 'FAILED', error_code = 'PAYOUT_BATCH_DENIED', updated_at = NOW() 
+             WHERE (paypal_batch_id = $1 OR sender_batch_id = $2) AND status NOT IN ('FAILED', 'SUCCEEDED')
+             RETURNING id, group_id, proposal_id, amount_cents`,
+            [batchId || null, senderBatchId || batchId]
           );
 
-          if (paymentRes.rows.length > 0) {
-            const p = paymentRes.rows[0];
-            await client.query(
-              `UPDATE payments SET status = 'FAILED', error_code = 'PAYOUT_BATCH_DENIED', updated_at = NOW() WHERE id = $1`,
-              [p.id]
-            );
+          if (updateRes.rows.length > 0) {
+            const p = updateRes.rows[0];
             await client.query(
               `INSERT INTO ledger_events (group_id, type, actor_kind, ref_type, ref_id, amount_cents, data)
                VALUES ($1, 'FUNDS_RELEASED', 'SYSTEM', 'PAYMENT', $2, $3, $4)`,

@@ -17,6 +17,7 @@ import {
   getGroupState,
   searchOptions,
   compareOptions,
+  checkProposal,
   createProposal,
   explainDecision,
   GroupStateResult,
@@ -25,7 +26,18 @@ import {
 import { CURATED_CATALOG } from './catalog';
 import { AgentExecutionStep, AgentRunResult } from './agent';
 
-export const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.8-flash';
+export const DEFAULT_GEMINI_MODEL = 'gemini-3.5-flash';
+export const GEMINI_MODEL = process.env.GEMINI_MODEL || DEFAULT_GEMINI_MODEL;
+
+export const CANDIDATE_MODELS: string[] = Array.from(
+  new Set([
+    process.env.GEMINI_MODEL,
+    'gemini-3.5-flash',
+    'gemini-3.6-flash',
+    'gemini-3-flash-preview',
+    'gemini-3.8-flash',
+  ].filter(Boolean) as string[])
+);
 
 export class GeminiRateLimitError extends Error {
   constructor(message: string) {
@@ -75,6 +87,19 @@ export const GEMINI_TOOL_DECLARATIONS = [
     },
   },
   {
+    name: 'check_proposal',
+    description: 'Dry-runs Quorum Guard on an item without writing to the database. Returns whether Guard will ALLOW or BLOCK, reason codes, required votes, and whether unanimity is needed. Always run before create_proposal.',
+    parameters: {
+      type: 'OBJECT',
+      properties: {
+        groupId: { type: 'STRING', description: 'The unique UUID of the group.' },
+        itemId: { type: 'STRING', description: "The catalog item ID to check (e.g. 'prod_proj_hd_standard')." },
+        rationale: { type: 'STRING', description: 'Optional selection rationale.' },
+      },
+      required: ['groupId', 'itemId'],
+    },
+  },
+  {
     name: 'create_proposal',
     description: 'Drafts a purchase proposal and immediately runs Quorum Guard in PROPOSAL phase. If Quorum Guard BLOCKS the item, it returns the blocking reason codes and the maximum allowed amount for adaptation. If approved, creates an OPEN proposal for member voting.',
     parameters: {
@@ -110,10 +135,10 @@ export interface GeminiAgentRunParams {
 }
 
 /**
- * Runs the Gemini agent with real function calling over the REST API
+ * Executes a single Gemini session with real function calling over the REST API
  */
-export async function runGeminiAgent(params: GeminiAgentRunParams): Promise<AgentRunResult> {
-  const { pool, groupId, query, apiKey, now, model = GEMINI_MODEL } = params;
+async function executeGeminiSession(params: GeminiAgentRunParams & { model: string }): Promise<AgentRunResult> {
+  const { pool, groupId, query, apiKey, now, model } = params;
   const steps: AgentExecutionStep[] = [];
   const loggedToolCalls: any[] = [];
   let stepCount = 0;
@@ -163,6 +188,7 @@ export async function runGeminiAgent(params: GeminiAgentRunParams): Promise<Agen
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(requestBody),
+      signal: AbortSignal.timeout(25000),
     });
 
     if (!response.ok) {
@@ -250,6 +276,21 @@ export async function runGeminiAgent(params: GeminiAgentRunParams): Promise<Agen
           detail: `Compared ${items.length} items against policy rules and thresholds.`,
           data: fnResult,
         });
+      } else if (fnName === 'check_proposal') {
+        const targetGroupId = fnArgs.groupId || groupId;
+        fnResult = await checkProposal({
+          pool,
+          groupId: targetGroupId,
+          itemId: fnArgs.itemId,
+          rationale: fnArgs.rationale,
+          now,
+        });
+        steps.push({
+          step: stepCount,
+          action: 'EVALUATE',
+          detail: `Quorum Guard dry-run for ${fnResult.itemName} (${fnResult.priceFormatted}): ${fnResult.guardDecision} (Votes required: ${fnResult.votesRequired}${fnResult.requiresUnanimity ? ' [UNANIMOUS 6/6]' : ' [STANDARD 4/6]'})`,
+          data: fnResult,
+        });
       } else if (fnName === 'create_proposal') {
         const targetGroupId = fnArgs.groupId || groupId;
         const item = CURATED_CATALOG.find((i) => i.id === fnArgs.itemId);
@@ -264,17 +305,22 @@ export async function runGeminiAgent(params: GeminiAgentRunParams): Promise<Agen
         if (!fnResult.success && fnResult.status === 'BLOCKED') {
           adaptationOccurred = true;
           lastBlockedItem = item;
-          steps.push({
-            step: stepCount,
-            action: 'PROPOSE_BLOCKED',
-            detail: `Quorum Guard BLOCKED ${item?.name || fnArgs.itemId} ($${((item?.priceCents || 0) / 100).toFixed(2)}): ${fnResult.guardResult.reasonCodes.join(', ')}. Guard suggestion: max allowed amount is $${((fnResult.adaptationSuggested?.maxAllowedAmountCents || 0) / 100).toFixed(2)}.`,
-            data: {
-              blockedItemId: fnArgs.itemId,
-              proposalId: fnResult.proposalId,
-              reasonCodes: fnResult.guardResult.reasonCodes,
-              maxAllowedAmountCents: fnResult.adaptationSuggested?.maxAllowedAmountCents,
-            },
-          });
+          const alreadyReported = steps.some(
+            (s) => s.action === 'PROPOSE_BLOCKED' && s.data?.blockedItemId === fnArgs.itemId
+          );
+          if (!alreadyReported) {
+            steps.push({
+              step: stepCount,
+              action: 'PROPOSE_BLOCKED',
+              detail: `Quorum Guard BLOCKED ${item?.name || fnArgs.itemId} ($${((item?.priceCents || 0) / 100).toFixed(2)}): ${fnResult.guardResult.reasonCodes.join(', ')}. Guard suggestion: max allowed amount is $${((fnResult.adaptationSuggested?.maxAllowedAmountCents || 0) / 100).toFixed(2)}.`,
+              data: {
+                blockedItemId: fnArgs.itemId,
+                proposalId: fnResult.proposalId,
+                reasonCodes: fnResult.guardResult.reasonCodes,
+                maxAllowedAmountCents: fnResult.adaptationSuggested?.maxAllowedAmountCents,
+              },
+            });
+          }
         } else if (fnResult.success) {
           finalProposedItem = item;
           createdProposalId = fnResult.proposalId;
@@ -304,14 +350,14 @@ export async function runGeminiAgent(params: GeminiAgentRunParams): Promise<Agen
       responseParts.push({
         functionResponse: {
           name: fnName,
-          response: { result: fnResult },
+          response: { name: fnName, content: fnResult },
         },
       });
     }
 
     // Append tool execution responses back to conversation
     contents.push({
-      role: 'function',
+      role: 'user',
       parts: responseParts,
     });
   }
@@ -346,4 +392,53 @@ export async function runGeminiAgent(params: GeminiAgentRunParams): Promise<Agen
     engine: 'LIVE_GEMINI',
     model,
   };
+}
+
+/**
+ * Runs the Gemini agent with candidate model fallback and exponential backoff.
+ * Tries prioritized models: [GEMINI_MODEL, 'gemini-3.5-flash', 'gemini-3.6-flash', 'gemini-3-flash-preview']
+ */
+export async function runGeminiAgent(params: GeminiAgentRunParams): Promise<AgentRunResult> {
+  const { pool, groupId, query, apiKey, now, model } = params;
+  const modelsToTry = model
+    ? [model, ...CANDIDATE_MODELS.filter((m) => m !== model)]
+    : CANDIDATE_MODELS;
+
+  let lastError: any = null;
+
+  for (const candidateModel of modelsToTry) {
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        return await executeGeminiSession({
+          pool,
+          groupId,
+          query,
+          apiKey,
+          now,
+          model: candidateModel,
+        });
+      } catch (err: any) {
+        lastError = err;
+        const msg = err.message || '';
+        const isTransient =
+          err.name === 'GeminiRateLimitError' ||
+          msg.includes('503') ||
+          msg.includes('high demand') ||
+          msg.includes('429') ||
+          msg.includes('RESOURCE_EXHAUSTED') ||
+          msg.includes('fetch failed');
+
+        if (isTransient && attempt === 1) {
+          console.warn(`[Gemini] Model '${candidateModel}' transient issue (${msg.slice(0, 80)}). Retrying in 1s...`);
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+          continue;
+        }
+
+        console.warn(`[Gemini] Model '${candidateModel}' failed (attempt ${attempt}/2): ${msg.slice(0, 100)}. Falling to next candidate model.`);
+        break;
+      }
+    }
+  }
+
+  throw lastError || new Error('All Gemini candidate models failed.');
 }

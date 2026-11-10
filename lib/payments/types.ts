@@ -96,4 +96,5 @@ export interface ExecutionTransactionResult {
   paypalBatchId?: string;
   guardResult?: GuardResult;
   error?: string;
+  code?: string;
 }

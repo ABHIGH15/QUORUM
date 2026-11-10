@@ -192,6 +192,8 @@ export interface OptionComparison {
   compliantWithVendor: boolean;
   compliantWithCategory: boolean;
   requiredVotes: number;
+  votesRequired: number; // §1a: explicitly exposed votesRequired
+  requiresUnanimity: boolean;
   withinBudget: boolean;
   guardPrediction: 'LIKELY_APPROVED' | 'LIKELY_BLOCKED';
   notes: string[];
@@ -235,15 +237,18 @@ export function compareOptions(
     }
 
     let requiredVotes = policy.totalEligibleVoters;
+    let requiresUnanimity = false;
     if (item.priceCents > policy.unanimousAboveCents) {
       requiredVotes = policy.totalEligibleVoters;
-      notes.push(`Above $${(policy.unanimousAboveCents / 100).toFixed(2)}: requires unanimous consent`);
+      requiresUnanimity = true;
+      notes.push(`Above $${(policy.unanimousAboveCents / 100).toFixed(2)}: requires unanimous consent (${requiredVotes}/${policy.totalEligibleVoters} votes)`);
     } else {
       const tiers = policy.approvalTiers || (policy as any).approval_tiers || [];
       const tier = tiers.find((t: any) => item.priceCents <= t.max_cents);
       if (tier) {
         requiredVotes = tier.votes_required;
       }
+      notes.push(`Standard tier: requires ${requiredVotes}/${policy.totalEligibleVoters} votes`);
     }
 
     const isCompliant = compliantWithCap && compliantWithVendor && compliantWithCategory && withinBudget;
@@ -254,11 +259,164 @@ export function compareOptions(
       compliantWithVendor,
       compliantWithCategory,
       requiredVotes,
+      votesRequired: requiredVotes,
+      requiresUnanimity,
       withinBudget,
       guardPrediction: isCompliant ? 'LIKELY_APPROVED' : 'LIKELY_BLOCKED',
       notes,
     };
   });
+}
+
+export interface CheckProposalParams {
+  pool: pg.Pool;
+  groupId: string;
+  itemId: string;
+  rationale?: string;
+  now?: string;
+}
+
+export interface CheckProposalResult {
+  itemId: string;
+  itemName: string;
+  priceCents: number;
+  priceFormatted: string;
+  guardDecision: 'ALLOWED' | 'BLOCKED';
+  votesRequired: number;
+  requiresUnanimity: boolean;
+  reasonCodes: string[];
+  maxAllowedAmountCents?: number;
+  notes: string[];
+}
+
+/**
+ * Tool: check_proposal (§1a Dry-Run Guard Check)
+ * Performs a dry-run check of an item against Quorum Guard WITHOUT writing to the database.
+ */
+export async function checkProposal(params: CheckProposalParams): Promise<CheckProposalResult> {
+  const { pool, groupId, itemId, rationale = 'Dry run policy check', now } = params;
+  const nowIso = now || new Date().toISOString();
+
+  const item = CURATED_CATALOG.find((i) => i.id === itemId);
+  if (!item) {
+    throw new Error(`Catalog item '${itemId}' not found in curated catalog`);
+  }
+
+  const policyRes = await pool.query(
+    `SELECT policy, version FROM policies WHERE group_id = $1 AND status = 'ACTIVE' ORDER BY version DESC LIMIT 1`,
+    [groupId]
+  );
+  if (policyRes.rows.length === 0) {
+    throw new Error(`Active policy not found for group '${groupId}'`);
+  }
+  const policyData = policyRes.rows[0].policy;
+  const policyVersion = policyRes.rows[0].version;
+
+  const groupRes = await pool.query(
+    `SELECT id, mode, status FROM groups WHERE id = $1`,
+    [groupId]
+  );
+  const groupRow = groupRes.rows[0];
+
+  const ledgerRes = await pool.query(
+    `SELECT 
+       COALESCE(SUM(CASE WHEN type = 'CONTRIBUTION_CAPTURED' THEN amount_cents ELSE 0 END), 0)::bigint as captured,
+       COALESCE(SUM(CASE WHEN type = 'CONTRIBUTION_REFUNDED' THEN amount_cents ELSE 0 END), 0)::bigint as refunded,
+       COALESCE(SUM(CASE WHEN type = 'PAYOUT_SUCCEEDED' THEN amount_cents ELSE 0 END), 0)::bigint as paid,
+       COALESCE(SUM(CASE WHEN type = 'FUNDS_RESERVED' THEN amount_cents ELSE 0 END), 0)::bigint as reserved,
+       COALESCE(SUM(CASE WHEN type = 'FUNDS_RELEASED' THEN amount_cents ELSE 0 END), 0)::bigint as released
+     FROM ledger_events WHERE group_id = $1`,
+    [groupId]
+  );
+  const l = ledgerRes.rows[0];
+  const netReserved = Math.max(0, parseInt(l.reserved, 10) - parseInt(l.released, 10));
+  const availableCents = parseInt(l.captured, 10) - parseInt(l.refunded, 10) - parseInt(l.paid, 10) - netReserved;
+
+  const membersRes = await pool.query(
+    `SELECT DISTINCT m.id 
+     FROM memberships m
+     LEFT JOIN contributions c ON c.member_id = m.id AND c.status = 'CAPTURED'
+     LEFT JOIN ledger_events le ON le.actor_id = m.id AND le.group_id = $1 AND le.type = 'CONTRIBUTION_CAPTURED'
+     WHERE m.group_id = $1 AND m.status = 'ACTIVE' AND (c.id IS NOT NULL OR le.id IS NOT NULL)`,
+    [groupId]
+  );
+  const eligibleVoters = membersRes.rows.map((r) => r.id);
+
+  const vendorRes = await pool.query(
+    `SELECT id, name, paypal_email, category, verified, source FROM vendors WHERE id = $1`,
+    [item.vendorId]
+  );
+  const vendorData = vendorRes.rows[0];
+
+  const guardInput: GuardInput = {
+    phase: 'PROPOSAL',
+    now: nowIso,
+    policy: policyData,
+    group: {
+      id: groupRow.id,
+      mode: groupRow.mode,
+      status: groupRow.status,
+    },
+    proposal: {
+      id: 'dry_run_check',
+      group_id: groupId,
+      type: 'PURCHASE',
+      status: 'DRAFT',
+      created_by_kind: 'AGENT',
+      policy_version: policyVersion,
+      vendor_id: item.vendorId,
+      category: item.category,
+      amount_cents: item.priceCents,
+      payload: { catalog_item_id: item.id, item_name: item.name, rationale },
+      voting_deadline: new Date(Date.now() + 72 * 3600 * 1000).toISOString(),
+    },
+    votes: [],
+    eligibleVoters,
+    vendor: vendorData,
+    funds: {
+      availableCents,
+      reservedCents: netReserved,
+      fundingReady: groupRow.status === 'ACTIVE',
+    },
+    existingLivePayment: false,
+  };
+
+  const guardResult = evaluate(guardInput);
+
+  const unanimousAbove = policyData.unanimous_above_cents ?? policyData.unanimousAboveCents ?? Infinity;
+  const tiers = policyData.approval_tiers || policyData.approvalTiers || [];
+  let votesRequired = eligibleVoters.length;
+  let requiresUnanimity = false;
+  const notes: string[] = [];
+
+  if (item.priceCents > unanimousAbove) {
+    requiresUnanimity = true;
+    votesRequired = eligibleVoters.length;
+    notes.push(`Mandates 100% unanimity (${votesRequired}/${eligibleVoters.length} active members)`);
+  } else {
+    const tier = tiers.find((t: any) => item.priceCents <= t.max_cents);
+    if (tier) {
+      votesRequired = tier.votes_required;
+    }
+    notes.push(`Standard approval tier: requires ${votesRequired}/${eligibleVoters.length} votes`);
+  }
+
+  if (guardResult.decision === 'BLOCKED') {
+    notes.push(`Guard BLOCKS item: ${guardResult.reasonCodes.join(', ')}`);
+  }
+
+  return {
+    itemId: item.id,
+    itemName: item.name,
+    priceCents: item.priceCents,
+    priceFormatted: `$${(item.priceCents / 100).toFixed(2)}`,
+    guardDecision: guardResult.decision === 'BLOCKED' ? 'BLOCKED' : 'ALLOWED',
+    votesRequired,
+    requiresUnanimity,
+    reasonCodes: guardResult.reasonCodes,
+    maxAllowedAmountCents: guardResult.suggestions?.maxAllowedAmountCents,
+    notes,
+  };
 }
 
 export interface CreateProposalParams {
@@ -389,31 +547,45 @@ export async function createProposal(params: CreateProposalParams): Promise<Crea
 
   // 9. If Guard BLOCKS proposal in PROPOSAL phase, record visible BLOCKED proposal & decision audit row
   if (guardResult.decision === 'BLOCKED') {
-    const insertBlockedRes = await pool.query(
-      `INSERT INTO proposals (
-        group_id, type, status, created_by_kind, policy_version,
-        vendor_id, category, amount_cents, payload, voting_deadline
-       ) VALUES (
-        $1, 'PURCHASE', 'BLOCKED', 'AGENT', $2,
-        $3, $4, $5, $6, $7
-       ) RETURNING id`,
-      [
-        groupId,
-        policyVersion,
-        item.vendorId,
-        item.category,
-        item.priceCents,
-        JSON.stringify({ catalog_item_id: item.id, item_name: item.name, rationale }),
-        votingDeadline,
-      ]
+    // Deduplication (§1c): Check if this item has already been proposed and recorded as BLOCKED in this group
+    const existingBlockedRes = await pool.query(
+      `SELECT id FROM proposals 
+       WHERE group_id = $1 AND status = 'BLOCKED' AND (
+         payload::text LIKE $2 OR payload::text LIKE $3
+       ) LIMIT 1`,
+      [groupId, `%"catalog_item_id":"${item.id}"%`, `%"itemId":"${item.id}"%`]
     );
-    const blockedProposalId = insertBlockedRes.rows[0].id;
 
-    await pool.query(
-      `INSERT INTO guard_decisions (proposal_id, phase, policy_version, input_snapshot, result, decision)
-       VALUES ($1, 'PROPOSAL', $2, $3, $4, $5)`,
-      [blockedProposalId, policyVersion, JSON.stringify(guardInput), JSON.stringify(guardResult), guardResult.decision]
-    );
+    let blockedProposalId: string;
+    if (existingBlockedRes.rows.length > 0) {
+      blockedProposalId = existingBlockedRes.rows[0].id;
+    } else {
+      const insertBlockedRes = await pool.query(
+        `INSERT INTO proposals (
+          group_id, type, status, created_by_kind, policy_version,
+          vendor_id, category, amount_cents, payload, voting_deadline
+         ) VALUES (
+          $1, 'PURCHASE', 'BLOCKED', 'AGENT', $2,
+          $3, $4, $5, $6, $7
+         ) RETURNING id`,
+        [
+          groupId,
+          policyVersion,
+          item.vendorId,
+          item.category,
+          item.priceCents,
+          JSON.stringify({ catalog_item_id: item.id, item_name: item.name, rationale }),
+          votingDeadline,
+        ]
+      );
+      blockedProposalId = insertBlockedRes.rows[0].id;
+
+      await pool.query(
+        `INSERT INTO guard_decisions (proposal_id, phase, policy_version, input_snapshot, result, decision)
+         VALUES ($1, 'PROPOSAL', $2, $3, $4, $5)`,
+        [blockedProposalId, policyVersion, JSON.stringify(guardInput), JSON.stringify(guardResult), guardResult.decision]
+      );
+    }
 
     return {
       success: false,

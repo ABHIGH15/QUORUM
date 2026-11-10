@@ -47,8 +47,11 @@ export async function POST(request: Request, context: RouteContext) {
 
     if (!executorMemberId) {
       return Response.json(
-        { error: 'Missing executor member persona. An active contributing member must authorize execution (I7).' },
-        { status: 400 }
+        {
+          error: 'Missing executor member persona. An active contributing member must authorize execution (I7).',
+          code: 'NO_UNILATERAL_EXECUTION',
+        },
+        { status: 403 }
       );
     }
 
@@ -74,11 +77,12 @@ export async function POST(request: Request, context: RouteContext) {
       return Response.json(
         {
           success: false,
+          code: result.code || 'NO_UNILATERAL_EXECUTION',
           phase: result.phase,
           error: result.error,
           guardResult: result.guardResult,
         },
-        { status: 422 }
+        { status: 403 }
       );
     }
 

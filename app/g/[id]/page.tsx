@@ -29,6 +29,9 @@ interface Member {
   display_name: string;
   paypal_sandbox_email: string;
   status: string;
+  contribution_status?: string;
+  contribution_cents?: number;
+  capture_attempts?: number;
 }
 
 interface ProposalVote {
@@ -88,6 +91,12 @@ interface GroupState {
     status: string;
     currency: string;
   };
+  fundingRound?: {
+    id: string;
+    status: string;
+    per_member_cents: number;
+    min_contributors: number;
+  } | null;
   policy: {
     version: number;
     currency: string;
@@ -140,6 +149,7 @@ export default function WorkspacePage({ params }: { params: { id: string } }) {
 
   // Demo shortcut & reset
   const [shortcutLoading, setShortcutLoading] = useState(false);
+  const [simulatingFailure, setSimulatingFailure] = useState(false);
   const [resetSecret, setResetSecret] = useState('');
   const [resetting, setResetting] = useState(false);
   const [resetMessage, setResetMessage] = useState<string | null>(null);
@@ -346,20 +356,64 @@ export default function WorkspacePage({ params }: { params: { id: string } }) {
     }
   };
 
+  // Demo S4 Simulation: Farid capture failure
+  const handleSimulateFaridFailure = async () => {
+    setSimulatingFailure(true);
+    setResetMessage(null);
+    try {
+      const res = await fetch('/api/demo/funding-failure', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ groupId, action: 'FAIL' }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to simulate failure');
+      }
+      setResetMessage("✓ [SIMULATED] Farid's capture failed after 3 retries. Pool holds $400.00. Governance decision required.");
+      await fetchState();
+    } catch (err: any) {
+      setResetMessage(`✕ Simulation failed: ${err.message}`);
+    } finally {
+      setSimulatingFailure(false);
+    }
+  };
+
+  // Demo S4 Decision: Accept Reduced Budget or Safe Unwind
+  const handleS4Decision = async (action: 'ACCEPT_REDUCED' | 'UNWIND') => {
+    setActionLoading(action);
+    setActionError(null);
+    try {
+      const res = await fetch('/api/demo/funding-failure', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ groupId, action }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Decision failed');
+      }
+      setResetMessage(`✓ [SIMULATED] ${data.message}`);
+      await fetchState();
+    } catch (err: any) {
+      setActionError(err.message || 'Failed to execute decision');
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
   // Demo reset
   const handleDemoReset = async () => {
-    if (!resetSecret) {
-      setResetMessage('Please enter your DEMO_RESET_SECRET');
-      return;
-    }
     setResetting(true);
     setResetMessage(null);
     try {
+      const headers: Record<string, string> = {};
+      if (resetSecret.trim()) {
+        headers['Authorization'] = `Bearer ${resetSecret.trim()}`;
+      }
       const res = await fetch('/api/demo/reset', {
         method: 'POST',
-        headers: {
-          Authorization: `Bearer ${resetSecret.trim()}`,
-        },
+        headers,
       });
       const data = await res.json();
       if (!res.ok) {
@@ -615,51 +669,128 @@ export default function WorkspacePage({ params }: { params: { id: string } }) {
 
                 {/* Funding Strip */}
                 <div className="bg-white rounded-2xl p-5 border border-[#e4e2dd] shadow-sm">
-                  <div className="flex items-center justify-between mb-3 pb-2 border-b border-slate-100">
-                    <div className="flex items-center gap-2">
-                      <Users className="w-4 h-4 text-[#064e3b]" />
-                      <h2 className="font-serif text-base font-bold text-slate-900">
-                        Contributing Members
-                      </h2>
-                    </div>
-                    <span className="text-[10px] font-mono px-1.5 py-0.5 bg-emerald-50 text-emerald-700 rounded">
-                      6 / 6 Captured
-                    </span>
-                  </div>
+                  {(() => {
+                    const faridMember = state?.members?.find((m) => m.member_id === '20000000-0000-0000-0000-000000000006');
+                    const isFaridFailed =
+                      faridMember?.contribution_status === 'CAPTURE_FAILED' ||
+                      state?.fundingRound?.status === 'PARTIAL_FAILURE';
+                    const capturedCount = isFaridFailed ? 5 : 6;
+                    const totalPoolDisplay = isFaridFailed ? '$400.00' : '$480.00';
 
-                  <div className="grid grid-cols-2 gap-2">
-                    {DEFAULT_MEMBERS.map((m) => (
-                      <button
-                        key={m.id}
-                        onClick={() => handleSwitchPersona(m.id)}
-                        className={`p-2 rounded-xl border flex items-center gap-2 transition cursor-pointer text-left ${
-                          m.id === currentMemberId
-                            ? 'bg-emerald-50/50 border-emerald-300 ring-1 ring-emerald-400'
-                            : 'bg-slate-50/60 border-slate-200 hover:bg-slate-100'
-                        }`}
-                      >
-                        <div
-                          className={`w-6 h-6 rounded-full ${m.color} text-white flex items-center justify-center text-[10px] font-bold flex-shrink-0`}
-                        >
-                          {m.initials}
-                        </div>
-                        <div className="min-w-0 flex-1">
-                          <div className="text-[11px] font-semibold text-slate-900 truncate">
-                            {m.name.split(' ')[0]}
+                    return (
+                      <>
+                        <div className="flex items-center justify-between mb-3 pb-2 border-b border-slate-100">
+                          <div className="flex items-center gap-2">
+                            <Users className="w-4 h-4 text-[#064e3b]" />
+                            <h2 className="font-serif text-base font-bold text-slate-900">
+                              Contributing Members
+                            </h2>
                           </div>
-                          <div className="text-[9px] font-mono text-emerald-700 flex items-center gap-1">
-                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-                            $80 Captured
-                          </div>
+                          <span
+                            className={`text-[10px] font-mono px-2 py-0.5 rounded ${
+                              isFaridFailed
+                                ? 'bg-amber-100 text-amber-900 border border-amber-300 font-bold'
+                                : 'bg-emerald-50 text-emerald-700 font-semibold'
+                            }`}
+                          >
+                            {capturedCount} / 6 Captured ({totalPoolDisplay})
+                          </span>
                         </div>
-                      </button>
-                    ))}
-                  </div>
+
+                        <div className="grid grid-cols-2 gap-2">
+                          {DEFAULT_MEMBERS.map((m) => {
+                            const isFailed =
+                              (m.id === '20000000-0000-0000-0000-000000000006' && isFaridFailed) ||
+                              state?.members?.find((mem) => mem.member_id === m.id)?.contribution_status === 'CAPTURE_FAILED';
+
+                            return (
+                              <button
+                                key={m.id}
+                                onClick={() => handleSwitchPersona(m.id)}
+                                className={`p-2 rounded-xl border flex items-center gap-2 transition cursor-pointer text-left ${
+                                  m.id === currentMemberId
+                                    ? 'bg-emerald-50/50 border-emerald-300 ring-1 ring-emerald-400'
+                                    : isFailed
+                                    ? 'bg-rose-50/40 border-rose-200 hover:bg-rose-50'
+                                    : 'bg-slate-50/60 border-slate-200 hover:bg-slate-100'
+                                }`}
+                              >
+                                <div
+                                  className={`w-6 h-6 rounded-full ${m.color} text-white flex items-center justify-center text-[10px] font-bold flex-shrink-0`}
+                                >
+                                  {m.initials}
+                                </div>
+                                <div className="min-w-0 flex-1">
+                                  <div className="text-[11px] font-semibold text-slate-900 truncate">
+                                    {m.name.split(' ')[0]}
+                                  </div>
+                                  {isFailed ? (
+                                    <div className="text-[9px] font-mono text-rose-700 font-bold flex items-center gap-1">
+                                      <span className="w-1.5 h-1.5 rounded-full bg-rose-500 animate-pulse" />
+                                      FAILED (3 retries)
+                                    </div>
+                                  ) : (
+                                    <div className="text-[9px] font-mono text-emerald-700 flex items-center gap-1">
+                                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                                      $80 Captured
+                                    </div>
+                                  )}
+                                </div>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </>
+                    );
+                  })()}
                 </div>
               </div>
 
               {/* CENTER COLUMN: Proposals Feed (col-span-12 lg:col-span-8 xl:col-span-5 space-y-4) */}
               <div className="col-span-12 lg:col-span-8 xl:col-span-5 space-y-4">
+                {/* S4 Partial Funding Failure Alert Banner */}
+                {(() => {
+                  const faridMember = state?.members?.find((m) => m.member_id === '20000000-0000-0000-0000-000000000006');
+                  const isFaridFailed =
+                    faridMember?.contribution_status === 'CAPTURE_FAILED' ||
+                    state?.fundingRound?.status === 'PARTIAL_FAILURE' ||
+                    state?.proposals?.some((p) => p.type === 'ACCEPT_REDUCED_BUDGET' || p.type === 'UNWIND_FUNDING');
+
+                  if (!isFaridFailed) return null;
+
+                  return (
+                    <div className="p-4 bg-amber-50 border-2 border-amber-300 rounded-2xl text-amber-950 mb-2 shadow-xs">
+                      <div className="flex items-center gap-2 mb-1.5 font-bold text-sm text-amber-900">
+                        <span className="px-2 py-0.5 rounded bg-amber-200 text-amber-900 text-[10px] font-mono uppercase tracking-wider font-bold">
+                          SIMULATED
+                        </span>
+                        <AlertTriangle className="w-4 h-4 text-amber-600 flex-shrink-0" />
+                        <span>Partial Funding Failure Detected (5 of 6 Captures Succeeded)</span>
+                      </div>
+                      <p className="text-xs text-amber-800 mb-3 leading-relaxed">
+                        Farid Al-Mansoor&apos;s authorization capture failed after 3 automated retry attempts ($80.00 uncollected). The group pool currently holds <strong>$400.00</strong>. Per policy, the group must decide between two deterministic paths:
+                      </p>
+                      <div className="flex flex-wrap gap-2.5">
+                        <button
+                          onClick={() => handleS4Decision('ACCEPT_REDUCED')}
+                          disabled={actionLoading !== null}
+                          className="px-3.5 py-2 bg-emerald-800 hover:bg-emerald-700 text-white rounded-xl text-xs font-semibold shadow-xs transition cursor-pointer flex items-center gap-1.5"
+                        >
+                          <Check className="w-3.5 h-3.5" />
+                          Option A: Accept Reduced Budget ($400.00)
+                        </button>
+                        <button
+                          onClick={() => handleS4Decision('UNWIND')}
+                          disabled={actionLoading !== null}
+                          className="px-3.5 py-2 bg-rose-700 hover:bg-rose-800 text-white rounded-xl text-xs font-semibold shadow-xs transition cursor-pointer flex items-center gap-1.5"
+                        >
+                          <XCircle className="w-3.5 h-3.5" />
+                          Option B: Safe Unwind &amp; Refund All ($400.00)
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })()}
                 <div className="flex items-center justify-between mb-1">
                   <div>
                     <h2 className="font-serif text-2xl font-bold tracking-tight text-slate-900">
@@ -1062,21 +1193,34 @@ export default function WorkspacePage({ params }: { params: { id: string } }) {
                     </span>
                   </button>
 
+                  {/* Demo S4: Simulate Farid's Capture Failure */}
+                  <button
+                    onClick={handleSimulateFaridFailure}
+                    disabled={simulatingFailure}
+                    className="px-3.5 py-1.5 bg-amber-700 hover:bg-amber-600 text-white rounded-lg text-xs font-semibold shadow-xs transition disabled:opacity-50 cursor-pointer flex items-center gap-1.5"
+                  >
+                    <AlertTriangle className="w-3.5 h-3.5 text-amber-200" />
+                    <span>
+                      {simulatingFailure ? 'Simulating...' : '[SIMULATED] Simulate: Farid\'s capture fails'}
+                    </span>
+                  </button>
+
                   {/* Reset Demo State */}
                   <div className="flex items-center gap-2">
                     <input
                       type="password"
-                      placeholder="DEMO_RESET_SECRET"
+                      placeholder="Secret (optional in demo)"
                       value={resetSecret}
                       onChange={(e) => setResetSecret(e.target.value)}
-                      className="px-3 py-1.5 rounded-lg border border-slate-300 bg-white text-xs font-mono text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-700"
+                      className="px-3 py-1.5 rounded-lg border border-slate-300 bg-white text-xs font-mono text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-700 w-36"
                     />
                     <button
                       onClick={handleDemoReset}
                       disabled={resetting}
-                      className="px-3 py-1.5 bg-slate-800 hover:bg-slate-900 text-white rounded-lg text-xs font-semibold transition disabled:opacity-50 cursor-pointer flex-shrink-0"
+                      className="px-3.5 py-1.5 bg-slate-800 hover:bg-slate-900 text-white rounded-lg text-xs font-semibold transition disabled:opacity-50 cursor-pointer flex-shrink-0 flex items-center gap-1.5"
                     >
-                      {resetting ? 'Resetting...' : 'Reset Pool ($480)'}
+                      <RotateCcw className="w-3.5 h-3.5" />
+                      <span>{resetting ? 'Resetting...' : 'Reset Demo Pool ($480)'}</span>
                     </button>
                   </div>
                 </div>

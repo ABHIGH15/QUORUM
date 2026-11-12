@@ -222,6 +222,7 @@ Open [http://localhost:3000](http://localhost:3000) to view the landing page and
 1. **Sandbox Environment:** All payments, authorizations, captures, and payouts execute against PayPal Sandbox. Real currency is not transferred.
 2. **Evaluation Persona Switcher:** In production, member identity is authenticated via cryptographic sessions or OAuth. For hackathon evaluation, judges can switch active members (Asha, Ben, Chloe, Dev, Elena, Farid) using the avatar bar. Identity is verified against the database on every vote and execution.
 3. **Seeded Demonstration Pool:** The seeded $480.00 pool represents a simulated initial contribution ledger (6 members &times; $80.00); live sandbox payouts draw against the sandbox business account balance.
+4. **Shared Evaluation State:** In the public deployment, all judges interact with the same shared demo group. State is shared; use **Reset Demo Pool ($480)** at the bottom of the workspace if the feed looks unfamiliar or has prior runs.
 
 ---
 

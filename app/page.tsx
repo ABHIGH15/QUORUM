@@ -165,7 +165,7 @@ export default function HomePage() {
               </h2>
             </div>
             <p className="text-xs text-slate-300">
-              Run the complete governance loop from purchasing prompt to row-locked PayPal payout in five simple steps.
+              Run the complete governance loop from purchasing prompt to row-locked PayPal payout in five simple steps. <span className="text-amber-300 font-medium">Note: State is shared; use &ldquo;Reset Demo Pool&rdquo; if the feed looks unfamiliar.</span>
             </p>
           </div>
           <button

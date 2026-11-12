@@ -451,7 +451,7 @@ export default function WorkspacePage({ params }: { params: { id: string } }) {
                   Quorum
                 </span>
                 <span className="text-[10px] uppercase font-mono tracking-wider text-slate-500 block">
-                  Governance Engine
+                  Governed Purchasing
                 </span>
               </div>
             </Link>

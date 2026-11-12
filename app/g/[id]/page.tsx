@@ -308,7 +308,11 @@ export default function WorkspacePage({ params }: { params: { id: string } }) {
 
       const data = await res.json();
       if (!res.ok) {
-        throw new Error(data.error || 'Payment execution failed');
+        let msg = data.error || 'Payment execution failed';
+        if (data.code === 'NO_UNILATERAL_EXECUTION') {
+          msg = "This purchase can't run yet: the group's approvals or veto window aren't complete (Code: NO_UNILATERAL_EXECUTION)";
+        }
+        throw new Error(msg);
       }
       await fetchState();
     } catch (err: any) {
@@ -452,13 +456,13 @@ export default function WorkspacePage({ params }: { params: { id: string } }) {
               </div>
             </Link>
 
-            <div className="hidden sm:block h-5 w-px bg-slate-300 mx-1" />
+            <div className="hidden sm:block h-5 w-px bg-slate-300 mx-2" />
 
-            <div className="hidden sm:flex items-center gap-2">
+            <div className="hidden sm:flex items-center gap-3">
               <span className="font-medium text-sm text-slate-900">
                 {state?.group?.name || 'Quorum Demo Club'}
               </span>
-              <span className="text-[11px] font-mono px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300">
+              <span className="text-[11px] font-mono px-2.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-300">
                 POOLED ($480)
               </span>
             </div>
@@ -493,7 +497,8 @@ export default function WorkspacePage({ params }: { params: { id: string } }) {
                     </span>
                     {member.role === 'Chair' && (
                       <span
-                        className={`hidden sm:inline text-[8px] font-mono uppercase px-1 rounded ${
+                        title="The chair has no extra financial powers."
+                        className={`hidden sm:inline text-[8px] font-mono uppercase px-1 rounded cursor-help ${
                           isActive ? 'bg-white/20 text-emerald-100' : 'bg-slate-100 text-slate-500'
                         }`}
                       >
@@ -574,33 +579,10 @@ export default function WorkspacePage({ params }: { params: { id: string } }) {
                   </div>
 
                   <div className="space-y-2.5 text-xs text-slate-700">
-                    <div className="flex justify-between items-center py-1 border-b border-slate-50">
-                      <span className="text-slate-500">Hard Cap (Single Purchase)</span>
-                      <span className="font-mono font-semibold text-slate-900">
-                        ${(((state?.policy?.hard_cap_cents ?? 20000)) / 100).toFixed(2)}
-                      </span>
-                    </div>
-                    <div className="flex justify-between items-center py-1 border-b border-slate-50">
-                      <span className="text-slate-500">Unanimity Threshold</span>
-                      <span className="font-mono font-semibold text-slate-900">
-                        &gt; ${(((state?.policy?.unanimous_above_cents ?? 15000)) / 100).toFixed(2)} (All 6)
-                      </span>
-                    </div>
                     <div className="py-1 border-b border-slate-50">
-                      <div className="text-slate-500 mb-1">Approval Tiers</div>
-                      <div className="space-y-1 font-mono text-[11px] pl-2 border-l-2 border-emerald-500">
-                        {(state?.policy?.approval_tiers || [
-                          { max_cents: 6000, votes_required: 2 },
-                          { max_cents: 15000, votes_required: 4 },
-                          { max_cents: 20000, votes_required: 6 },
-                        ]).map((tier, idx) => (
-                          <div key={idx} className="flex justify-between">
-                            <span>Up to ${(tier.max_cents / 100).toFixed(2)}</span>
-                            <span className="font-semibold text-slate-900">
-                              {tier.votes_required} votes required
-                            </span>
-                          </div>
-                        ))}
+                      <div className="text-slate-500 mb-1 font-medium">Approval Tiers</div>
+                      <div className="text-[11px] font-mono text-slate-800 bg-slate-50 p-2.5 rounded-xl border border-slate-200/80 leading-relaxed">
+                        Up to $60: 2 votes &middot; Up to $150: 4 votes &middot; Over $150 (cap $200): all 6 members
                       </div>
                     </div>
                     <div className="flex justify-between items-center py-1 border-b border-slate-50">
@@ -813,10 +795,10 @@ export default function WorkspacePage({ params }: { params: { id: string } }) {
                   <div className="bg-white rounded-2xl p-12 border border-[#e4e2dd] text-center shadow-sm">
                     <FileText className="w-12 h-12 text-slate-400 mx-auto mb-3" />
                     <h3 className="font-serif text-lg font-bold text-slate-800 mb-1">
-                      No Proposals in Feed
+                      No proposals yet
                     </h3>
                     <p className="text-xs text-slate-500 max-w-md mx-auto mb-6">
-                      Proposals drafted by the AI Purchasing Agent or group members appear here for review and voting.
+                      No proposals yet. Ask the agent to find something, or try a sample request.
                     </p>
                   </div>
                 ) : (
@@ -1100,19 +1082,37 @@ export default function WorkspacePage({ params }: { params: { id: string } }) {
                                     <XCircle className="w-3.5 h-3.5 text-rose-600" />
                                     Veto
                                   </button>
+                                  <button
+                                    disabled
+                                    title={`Needs ${votesRequired} approvals (${approvals.length}/${votesRequired} cast)`}
+                                    className="px-3.5 py-1.5 bg-slate-100 text-slate-400 rounded-lg text-xs font-semibold cursor-not-allowed flex items-center gap-1.5 border border-slate-200"
+                                  >
+                                    <Lock className="w-3.5 h-3.5 text-slate-400" />
+                                    <span>Execute Payment</span>
+                                  </button>
                                 </>
                               )}
 
                               {/* Veto Button during VETO_WINDOW */}
                               {proposal.status === 'VETO_WINDOW' && (
-                                <button
-                                  onClick={() => handleVote(proposal.id, 'VETO')}
-                                  disabled={actionLoading !== null}
-                                  className="px-4 py-2 bg-rose-700 hover:bg-rose-800 text-white rounded-lg text-xs font-bold shadow transition disabled:opacity-50 cursor-pointer flex items-center gap-1.5"
-                                >
-                                  <XCircle className="w-4 h-4" />
-                                  Cast Member Veto (Halt Execution)
-                                </button>
+                                <>
+                                  <button
+                                    onClick={() => handleVote(proposal.id, 'VETO')}
+                                    disabled={actionLoading !== null}
+                                    className="px-4 py-2 bg-rose-700 hover:bg-rose-800 text-white rounded-lg text-xs font-bold shadow transition disabled:opacity-50 cursor-pointer flex items-center gap-1.5"
+                                  >
+                                    <XCircle className="w-4 h-4" />
+                                    Veto
+                                  </button>
+                                  <button
+                                    disabled
+                                    title={`Veto window closes in ${vetoCountdownStr || '2:00'}`}
+                                    className="px-4 py-2 bg-slate-100 text-slate-400 rounded-lg text-xs font-semibold cursor-not-allowed flex items-center gap-1.5 border border-slate-200"
+                                  >
+                                    <Lock className="w-4 h-4 text-slate-400" />
+                                    <span>Execute Payment</span>
+                                  </button>
+                                </>
                               )}
 
                               {/* Execute Button (EXECUTABLE status) */}
@@ -1125,8 +1125,8 @@ export default function WorkspacePage({ params }: { params: { id: string } }) {
                                   <Lock className="w-4 h-4 text-emerald-300" />
                                   <span>
                                     {actionLoading === `execute-${proposal.id}`
-                                      ? 'Executing PostgreSQL Lock & Payout...'
-                                      : 'Execute PayPal Payout'}
+                                      ? 'Executing payment...'
+                                      : 'Execute Payment'}
                                   </span>
                                 </button>
                               )}
@@ -1168,69 +1168,64 @@ export default function WorkspacePage({ params }: { params: { id: string } }) {
 
             {/* Footer Demo Tools & Shortcuts */}
             <footer className="pt-6 pb-12 border-t border-slate-200 text-xs text-slate-500 space-y-4">
-              {/* Demo Tools Bar */}
-              <div className="flex flex-col lg:flex-row items-center justify-between gap-4 bg-slate-100 p-4 rounded-xl border border-slate-200">
-                <div className="flex items-center gap-3">
-                  <div className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" />
-                  <div>
-                    <span className="font-semibold text-slate-800 block">Evaluation Shortcuts:</span>
-                    <span className="text-[11px] text-slate-600">
-                      Real Guard-evaluated shortcuts to test voting and reset state.
+              {/* Demo Tools Bar: Collapsible Panel */}
+              <details open className="group bg-slate-100 rounded-xl border border-slate-200 overflow-hidden text-xs text-slate-600">
+                <summary className="p-3.5 flex items-center justify-between cursor-pointer select-none bg-slate-100 hover:bg-slate-200/60 transition">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" />
+                    <span className="font-semibold text-slate-800">Demo tools</span>
+                    <span className="text-[11px] text-slate-500 hidden sm:inline">
+                      &mdash; Shortcuts for testing voting, funding failure simulation, and resetting state
                     </span>
                   </div>
-                </div>
+                  <span className="font-mono text-slate-400 text-[10px] group-open:rotate-180 transition-transform">▼</span>
+                </summary>
 
-                <div className="flex flex-wrap items-center gap-3 w-full lg:w-auto">
-                  {/* Demo Shortcut: Cast 4 Approvals */}
-                  <button
-                    onClick={handleDemoApprovalsShortcut}
-                    disabled={shortcutLoading}
-                    className="px-3.5 py-1.5 bg-emerald-800 hover:bg-emerald-700 text-white rounded-lg text-xs font-semibold shadow-xs transition disabled:opacity-50 cursor-pointer flex items-center gap-1.5"
-                  >
-                    <Zap className="w-3.5 h-3.5 text-emerald-300" />
-                    <span>
-                      {shortcutLoading ? 'Casting votes...' : 'Demo Shortcut: 4 Approvals (Asha, Ben, Chloe, Dev)'}
-                    </span>
-                  </button>
+                <div className="p-4 pt-2 border-t border-slate-200/80 flex flex-wrap items-center justify-between gap-3 bg-slate-50">
+                  <div className="flex flex-wrap items-center gap-2.5">
+                    {/* Approve as 4 members (demo) */}
+                    <button
+                      onClick={handleDemoApprovalsShortcut}
+                      disabled={shortcutLoading}
+                      className="px-3.5 py-1.5 bg-emerald-800 hover:bg-emerald-700 text-white rounded-lg text-xs font-semibold shadow-xs transition disabled:opacity-50 cursor-pointer flex items-center gap-1.5"
+                    >
+                      <Zap className="w-3.5 h-3.5 text-emerald-300" />
+                      <span>
+                        {shortcutLoading ? 'Casting votes...' : 'Approve as 4 members (demo)'}
+                      </span>
+                    </button>
 
-                  {/* Demo S4: Simulate Farid's Capture Failure */}
-                  <button
-                    onClick={handleSimulateFaridFailure}
-                    disabled={simulatingFailure}
-                    className="px-3.5 py-1.5 bg-amber-700 hover:bg-amber-600 text-white rounded-lg text-xs font-semibold shadow-xs transition disabled:opacity-50 cursor-pointer flex items-center gap-1.5"
-                  >
-                    <AlertTriangle className="w-3.5 h-3.5 text-amber-200" />
-                    <span>
-                      {simulatingFailure ? 'Simulating...' : '[SIMULATED] Simulate: Farid\'s capture fails'}
-                    </span>
-                  </button>
+                    {/* Demo S4: Simulate Farid's Capture Failure */}
+                    <button
+                      onClick={handleSimulateFaridFailure}
+                      disabled={simulatingFailure}
+                      className="px-3.5 py-1.5 bg-amber-700 hover:bg-amber-600 text-white rounded-lg text-xs font-semibold shadow-xs transition disabled:opacity-50 cursor-pointer flex items-center gap-1.5"
+                    >
+                      <AlertTriangle className="w-3.5 h-3.5 text-amber-200" />
+                      <span>
+                        {simulatingFailure ? 'Simulating...' : '[SIMULATED] Simulate: Farid\'s capture fails'}
+                      </span>
+                    </button>
+                  </div>
 
-                  {/* Reset Demo State */}
                   <div className="flex items-center gap-2">
-                    <input
-                      type="password"
-                      placeholder="Secret (optional in demo)"
-                      value={resetSecret}
-                      onChange={(e) => setResetSecret(e.target.value)}
-                      className="px-3 py-1.5 rounded-lg border border-slate-300 bg-white text-xs font-mono text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-700 w-36"
-                    />
                     <button
                       onClick={handleDemoReset}
                       disabled={resetting}
-                      className="px-3.5 py-1.5 bg-slate-800 hover:bg-slate-900 text-white rounded-lg text-xs font-semibold transition disabled:opacity-50 cursor-pointer flex-shrink-0 flex items-center gap-1.5"
+                      className="px-3.5 py-1.5 bg-slate-800 hover:bg-slate-900 text-white rounded-lg text-xs font-semibold transition disabled:opacity-50 cursor-pointer flex items-center gap-1.5"
                     >
                       <RotateCcw className="w-3.5 h-3.5" />
                       <span>{resetting ? 'Resetting...' : 'Reset Demo Pool ($480)'}</span>
                     </button>
                   </div>
                 </div>
-              </div>
 
-              {resetMessage && (
-                <div className="text-center text-xs font-mono font-medium text-slate-700">
-                  {resetMessage}
-                </div>
-              )}
+                {resetMessage && (
+                  <div className="px-4 py-2 border-t border-slate-200 bg-white text-center text-xs font-mono font-medium text-slate-700">
+                    {resetMessage}
+                  </div>
+                )}
+              </details>
             </footer>
           </div>
         )}

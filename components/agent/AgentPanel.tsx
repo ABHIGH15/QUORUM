@@ -11,9 +11,8 @@ import {
   CheckCircle2,
   RefreshCw,
   ArrowRight,
-  HelpCircle,
-  Zap,
   Info,
+  Zap,
 } from 'lucide-react';
 
 export interface AgentExecutionStep {
@@ -48,17 +47,17 @@ interface AgentPanelProps {
 
 const SAMPLE_PROMPTS = [
   {
-    label: '🎬 Movie Night (Autonomous Adapt Loop)',
+    label: '🎬 Movie night projector',
     query: 'Find a 4K projector for movie night',
-    desc: 'Demonstrates $350 item blocked by $200 cap, then adapts autonomously to $145 OptiView HD',
+    desc: 'Demonstrates $350 item blocked by $200 cap, then adapts to $145 OptiView HD',
   },
   {
-    label: '🔊 Audio Upgrade',
+    label: '🔊 Audio upgrade',
     query: 'Find wireless surround speakers under $100',
     desc: 'Searches catalog for compliant audio options',
   },
   {
-    label: '🖥️ Projection Screen',
+    label: '🖥️ Projection screen',
     query: 'Find a high-contrast projection screen',
     desc: 'Searches catalog and drafts compliant proposal',
   },
@@ -138,7 +137,7 @@ export default function AgentPanel({ groupId, currentMemberId, onProposalCreated
       case 'ADAPT':
         return {
           icon: <Zap className="w-3.5 h-3.5 text-amber-600" />,
-          bg: 'bg-amber-50 border-amber-300 text-amber-950 font-bold animate-pulse',
+          bg: 'bg-amber-50 border-amber-300 text-amber-950 font-bold',
           label: 'GUARD-GUIDED ADAPTATION',
         };
       case 'PROPOSE_SUCCESS':
@@ -172,7 +171,7 @@ export default function AgentPanel({ groupId, currentMemberId, onProposalCreated
             </div>
           </div>
 
-          {/* Engine Status Badge (§9.1, Evaluator Transparency) */}
+          {/* Engine Status Badge: Shows real live state */}
           <div>
             {lastResult?.engine === 'LIVE_GEMINI' ? (
               <span
@@ -180,7 +179,7 @@ export default function AgentPanel({ groupId, currentMemberId, onProposalCreated
                 className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-mono font-semibold bg-emerald-100 text-emerald-900 border border-emerald-300"
               >
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-600 animate-ping" />
-                Live Gemini ({lastResult.model || 'Flash'})
+                Live Gemini
               </span>
             ) : lastResult?.engine === 'DETERMINISTIC_REPLAY' ? (
               <span
@@ -188,12 +187,12 @@ export default function AgentPanel({ groupId, currentMemberId, onProposalCreated
                 className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-mono font-semibold bg-amber-50 text-amber-900 border border-amber-300"
               >
                 <Sparkles className="w-3 h-3 text-amber-600" />
-                Rule-based fallback (Gemini unavailable)
+                Rule-based fallback (Gemini rate-limited)
               </span>
             ) : (
-              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-mono text-slate-600 bg-slate-100 border border-slate-200">
-                <Sparkles className="w-3 h-3 text-emerald-700" />
-                Gemini Flash Ready
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-mono font-semibold bg-emerald-50 text-emerald-900 border border-emerald-200">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-600" />
+                Live Gemini
               </span>
             )}
           </div>
@@ -228,6 +227,20 @@ export default function AgentPanel({ groupId, currentMemberId, onProposalCreated
             ))}
           </div>
         </div>
+
+        {/* Typing / Thinking Indicator while agent works */}
+        {loading && (
+          <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-700 flex items-center gap-3 animate-pulse">
+            <div className="flex items-center gap-1">
+              <span className="w-2 h-2 rounded-full bg-emerald-600 animate-bounce" style={{ animationDelay: '0ms' }} />
+              <span className="w-2 h-2 rounded-full bg-emerald-600 animate-bounce" style={{ animationDelay: '150ms' }} />
+              <span className="w-2 h-2 rounded-full bg-emerald-600 animate-bounce" style={{ animationDelay: '300ms' }} />
+            </div>
+            <span className="text-[11px] text-slate-600 font-medium">
+              Agent is researching catalog, evaluating policy rules, and preparing proposal…
+            </span>
+          </div>
+        )}
 
         {/* Error message */}
         {error && (

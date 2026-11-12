@@ -2,8 +2,15 @@ import type { Metadata } from 'next';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: 'Quorum — Autonomous AI Group Purchasing & Governance',
-  description: 'Deterministic multi-agent governance & financial execution engine on PayPal.',
+  title: 'Quorum — Governed Group Purchasing',
+  description: 'Governed group purchasing: AI proposes, members vote, PayPal pays',
+  openGraph: {
+    title: 'Quorum — Governed Group Purchasing',
+    description: 'Governed group purchasing: AI proposes, members vote, PayPal pays',
+    url: 'https://quorum-governance.onrender.com',
+    siteName: 'Quorum',
+    type: 'website',
+  },
 };
 
 export default function RootLayout({

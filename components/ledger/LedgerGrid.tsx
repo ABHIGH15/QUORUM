@@ -7,21 +7,15 @@ import {
   AllCommunityModule,
   ColDef,
   RowClickedEvent,
-  GridReadyEvent,
 } from 'ag-grid-community';
 import {
   Activity,
   Search,
-  SlidersHorizontal,
   Eye,
   Copy,
   Check,
   ShieldCheck,
   X,
-  FileText,
-  DollarSign,
-  Clock,
-  UserCheck,
 } from 'lucide-react';
 
 // Register AG Grid Community modules
@@ -46,10 +40,45 @@ interface LedgerGridProps {
   currency?: string;
 }
 
+export const getReadableEventType = (type: string) => {
+  switch (type) {
+    case 'CONTRIBUTION_CAPTURED':
+      return 'Contribution captured';
+    case 'FUNDS_RESERVED':
+      return 'Funds reserved';
+    case 'PAYOUT_SUBMITTED':
+      return 'Payout submitted';
+    case 'PAYOUT_SUCCEEDED':
+      return 'Payout succeeded';
+    case 'FUNDS_RELEASED':
+      return 'Funds released';
+    case 'PAYOUT_FAILED':
+      return 'Payout failed';
+    case 'PAYOUT_UNCLAIMED':
+      return 'Payout unclaimed';
+    case 'VETO_CAST':
+      return 'Veto cast';
+    case 'POLICY_UPDATED':
+      return 'Policy updated';
+    default:
+      return type.replace(/_/g, ' ').toLowerCase().replace(/^\w/, (c) => c.toUpperCase());
+  }
+};
+
 export default function LedgerGrid({ ledger, currency = 'USD' }: LedgerGridProps) {
   const [quickFilterText, setQuickFilterText] = useState('');
   const [selectedEvent, setSelectedEvent] = useState<LedgerEvent | null>(null);
   const [copied, setCopied] = useState(false);
+
+  // Sort newest first
+  const sortedLedger = useMemo(() => {
+    return [...ledger].sort((a, b) => {
+      const timeA = new Date(a.created_at).getTime() || 0;
+      const timeB = new Date(b.created_at).getTime() || 0;
+      if (timeB !== timeA) return timeB - timeA;
+      return (b.id || 0) - (a.id || 0);
+    });
+  }, [ledger]);
 
   // Column Definitions
   const columnDefs = useMemo<ColDef<LedgerEvent>[]>(() => {
@@ -95,28 +124,30 @@ export default function LedgerGrid({ ledger, currency = 'USD' }: LedgerGridProps
         sortable: true,
         filter: true,
         cellRenderer: (params: any) => {
-          const type = String(params.value || '');
+          const rawType = String(params.value || '');
+          const readable = getReadableEventType(rawType);
           let style = 'bg-slate-100 text-slate-800 border-slate-300';
 
-          if (type.includes('CAPTURED')) {
+          if (rawType.includes('CAPTURED')) {
             style = 'bg-emerald-50 text-emerald-800 border-emerald-300 font-semibold';
-          } else if (type === 'FUNDS_RESERVED') {
+          } else if (rawType === 'FUNDS_RESERVED') {
             style = 'bg-amber-50 text-amber-900 border-amber-300 font-semibold';
-          } else if (type === 'PAYOUT_SUBMITTED') {
+          } else if (rawType === 'PAYOUT_SUBMITTED') {
             style = 'bg-blue-50 text-blue-900 border-blue-300 font-semibold';
-          } else if (type === 'PAYOUT_SUCCEEDED') {
+          } else if (rawType === 'PAYOUT_SUCCEEDED') {
             style = 'bg-emerald-800 text-white font-bold';
-          } else if (type === 'FUNDS_RELEASED') {
+          } else if (rawType === 'FUNDS_RELEASED') {
             style = 'bg-teal-50 text-teal-800 border-teal-300';
-          } else if (type === 'PAYOUT_FAILED' || type === 'PAYOUT_UNCLAIMED' || type.includes('VETO')) {
+          } else if (rawType === 'PAYOUT_FAILED' || rawType === 'PAYOUT_UNCLAIMED' || rawType.includes('VETO')) {
             style = 'bg-rose-50 text-rose-800 border-rose-300 font-semibold';
           }
 
           return (
             <span
-              className={`inline-block px-2 py-0.5 rounded text-[11px] font-mono border ${style}`}
+              className={`inline-block px-2 py-0.5 rounded text-[11px] font-sans border ${style}`}
+              title={rawType}
             >
-              {type}
+              {readable}
             </span>
           );
         },
@@ -239,11 +270,11 @@ export default function LedgerGrid({ ledger, currency = 'USD' }: LedgerGridProps
               Interactive Audit Ledger (AG Grid)
             </h2>
             <span className="text-[10px] font-mono px-2 py-0.5 bg-emerald-100 text-emerald-900 border border-emerald-300 rounded font-semibold">
-              Immutable PostgreSQL
+              Append-only
             </span>
           </div>
           <p className="text-xs text-slate-500 mt-0.5 font-sans">
-            Cryptographically sound, append-only financial and governance transaction log with live filtering and inspection.
+            Append-only audit log of every state change
           </p>
         </div>
 
@@ -260,26 +291,34 @@ export default function LedgerGrid({ ledger, currency = 'USD' }: LedgerGridProps
             />
           </div>
           <span className="text-[11px] font-mono text-slate-500 px-2 py-1 bg-slate-100 rounded border border-slate-200 whitespace-nowrap">
-            {ledger.length} Events
+            {sortedLedger.length} Events
           </span>
         </div>
       </div>
 
-      {/* AG Grid Table Container */}
-      <div className="ag-theme-quartz w-full h-[360px] rounded-xl overflow-hidden border border-slate-200 text-xs">
-        <AgGridReact
-          rowData={ledger}
-          columnDefs={columnDefs}
-          defaultColDef={defaultColDef}
-          quickFilterText={quickFilterText}
-          onRowClicked={onRowClicked}
-          rowSelection="single"
-          animateRows={true}
-          pagination={true}
-          paginationPageSize={10}
-          paginationPageSizeSelector={[10, 20, 50]}
-        />
-      </div>
+      {/* AG Grid Table Container or Empty State */}
+      {sortedLedger.length === 0 ? (
+        <div className="py-12 border border-slate-200 rounded-xl text-center bg-slate-50/50">
+          <Activity className="w-8 h-8 text-slate-400 mx-auto mb-2" />
+          <p className="text-sm font-semibold text-slate-700">No ledger events recorded yet</p>
+          <p className="text-xs text-slate-500 mt-1">Transactions and contributions will be logged here in real time.</p>
+        </div>
+      ) : (
+        <div className="ag-theme-quartz w-full h-[360px] rounded-xl overflow-hidden border border-slate-200 text-xs">
+          <AgGridReact
+            rowData={sortedLedger}
+            columnDefs={columnDefs}
+            defaultColDef={defaultColDef}
+            quickFilterText={quickFilterText}
+            onRowClicked={onRowClicked}
+            rowSelection="single"
+            animateRows={true}
+            pagination={true}
+            paginationPageSize={10}
+            paginationPageSizeSelector={[10, 20, 50]}
+          />
+        </div>
+      )}
 
       {/* Ledger Event Inspection Modal */}
       {selectedEvent && (
@@ -310,7 +349,8 @@ export default function LedgerGrid({ ledger, currency = 'USD' }: LedgerGridProps
                     Event Type
                   </span>
                   <span className="font-mono text-sm font-bold text-slate-900">
-                    {selectedEvent.type}
+                    {getReadableEventType(selectedEvent.type)}{' '}
+                    <span className="text-xs font-normal text-slate-500">({selectedEvent.type})</span>
                   </span>
                 </div>
                 <div className="text-right">
@@ -384,7 +424,7 @@ export default function LedgerGrid({ ledger, currency = 'USD' }: LedgerGridProps
               <div className="p-3 bg-emerald-50/60 rounded-xl border border-emerald-200 text-[11px] text-emerald-950 flex items-start gap-2">
                 <ShieldCheck className="w-4 h-4 text-emerald-700 flex-shrink-0 mt-0.5" />
                 <span>
-                  Ledger event is committed in PostgreSQL table <code>public.ledger</code> with Row Level Security and strict append-only constraints.
+                  Ledger event is committed in PostgreSQL table <code>public.ledger_events</code> with strict append-only constraints.
                 </span>
               </div>
             </div>

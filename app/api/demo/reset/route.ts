@@ -15,12 +15,15 @@ export async function POST(request: Request) {
     const token = authHeader.replace(/^Bearer\s+/i, '').trim();
     const expectedSecret = process.env.DEMO_RESET_SECRET;
 
-    const isDemoMode = process.env.DEMO_MODE === 'true' || process.env.NODE_ENV !== 'production';
+    const isDemoMode =
+      process.env.DEMO_MODE === 'true' ||
+      process.env.PAYPAL_ENV === 'sandbox' ||
+      process.env.NODE_ENV !== 'production';
     const origin = request.headers.get('origin') || '';
     const host = request.headers.get('host') || '';
     const isSameOrigin = Boolean(origin && host && origin.includes(host));
 
-    const isAuthorized = (expectedSecret && token === expectedSecret) || (isDemoMode && (isSameOrigin || !token));
+    const isAuthorized = (expectedSecret && token === expectedSecret) || (isDemoMode && isSameOrigin);
 
     if (!isAuthorized) {
       return Response.json({ error: 'Unauthorized: Invalid or missing DEMO_RESET_SECRET' }, { status: 401 });
